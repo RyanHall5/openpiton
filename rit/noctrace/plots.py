@@ -224,6 +224,63 @@ def top_paths(run, path, top=15):
     plt.close(fig)
 
 
+def _sig_title(app, core, rnd):
+    t = f"{app} — Core {core}" if app else f"Core {core}"
+    return t + (f", Round {rnd}" if rnd is not None else "")
+
+
+def signature_plots(sig, window, outdir, app=None, rnd=None, metric="injected"):
+    """One packets-per-window line plot per core (sig = metrics.signature()),
+    plus one figure with every core on a shared y-axis."""
+    import os
+    d = os.path.join(outdir, "signatures")
+    os.makedirs(d, exist_ok=True)
+    xlabel = f"Cycle window ({window:,} cycles each)"
+    ylabel = "Number of packets" + ("" if metric == "injected" else f" ({metric})")
+    made = []
+    cores = sorted(sig["core"].unique())
+    for c in cores:
+        s = sig[sig["core"] == c]
+        fig, ax = plt.subplots(figsize=(8, 4.2))
+        ax.plot(s["window"].to_numpy(), s["packets"].to_numpy(), color=NOC_COLORS[1], lw=1.6)
+        ax.set_title(_sig_title(app, c, rnd), loc="center")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_ylim(bottom=0)
+        fig.tight_layout()
+        p = os.path.join(d, f"core{c}.png")
+        fig.savefig(p, dpi=150)
+        plt.close(fig)
+        made.append(p)
+
+    n = len(cores)
+    ncol = min(4, n)
+    nrow = (n + ncol - 1) // ncol
+    fig, axes = plt.subplots(nrow, ncol, figsize=(3.4 * ncol, 2.4 * nrow + 0.8),
+                             sharex=True, sharey=True, squeeze=False)
+    for ax in axes.flat[n:]:
+        ax.set_visible(False)
+    for ax, c in zip(axes.flat, cores):
+        s = sig[sig["core"] == c]
+        ax.plot(s["window"].to_numpy(), s["packets"].to_numpy(), color=NOC_COLORS[1], lw=1.2)
+        ax.set_title(f"Core {c}", loc="center", fontsize=10)
+    ymax = float(sig["packets"].max()) if len(sig) else 1.0
+    axes.flat[0].set_ylim(0, ymax * 1.08 or 1)   # shared y: one limit for every core
+    for ax in axes[-1]:
+        ax.set_xlabel("Cycle window")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("Packets")
+    head = (f"{app} — " if app else "") + "packets per core per window"
+    head += (f", Round {rnd}" if rnd is not None else "") + f"  ({window:,} cycles/window, shared y-axis)"
+    fig.suptitle(head, x=0.01, ha="left", fontsize=11, fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.95 if nrow > 1 else 0.9))
+    p = os.path.join(outdir, "signatures_all_cores.png")
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    made.append(p)
+    return made
+
+
 def all_plots(run, bin_cycles, outdir):
     import os
     made = []

@@ -110,6 +110,56 @@ def path_matrix(run, noc=None):
     return m.reindex(index=labels, columns=labels, fill_value=0)
 
 
+SIGNATURE_METRICS = {
+    "injected": "packets the core's tile sent into the network",
+    "ejected": "packets delivered to the core's tile",
+    "router": "packets passing through the core's router (sent, received or forwarded)",
+}
+
+
+def signature(run, window, metric="injected"):
+    """Per-core packet counts per time window: one 'application signature'
+    time series per core, in the style of packets-per-window plots.
+
+    Columns: core, window (0, 1, 2, ...), cycle_start, packets, flits.
+    Every core gets every window (zeros included), so series line up across
+    cores and across runs that use the same window size. Window 0 starts at
+    the run's first traced cycle. Off-chip traffic is not a core and is left
+    out. In OpenPiton each tile has one core, so core N = tile N.
+    """
+    m = run.mesh
+    if metric not in SIGNATURE_METRICS:
+        raise ValueError(f"metric must be one of {list(SIGNATURE_METRICS)}")
+    p = run.packets
+    if metric == "injected":
+        rows = p[p["src_node"].between(m.NT, 2 * m.NT - 1)]
+        core = rows["src_node"] - m.NT
+        cyc = rows["inject_cycle"]
+        flits = rows["flits"]
+    elif metric == "ejected":
+        rows = p[p["dst_node"].between(m.NT, 2 * m.NT - 1) & (p["eject_cycle"] >= 0)]
+        core = rows["dst_node"] - m.NT
+        cyc = rows["eject_cycle"]
+        flits = rows["flits"]
+    else:
+        # every packet leaves each router it passes through exactly once
+        h = run.hops[run.hops["from_node"] < m.NT]
+        core = h["from_node"]
+        cyc = h["head_cycle"]
+        flits = h["nflits"]
+    t0 = int(run.events["cycle"].min()) if len(run.events) else 0
+    t1 = int(run.events["cycle"].max()) if len(run.events) else 0
+    nwin = (t1 - t0) // window + 1
+    df = pd.DataFrame({"core": core.to_numpy().astype(int),
+                       "window": ((cyc.to_numpy() - t0) // window).astype(int),
+                       "flits": flits.to_numpy()})
+    g = df.groupby(["core", "window"]).agg(packets=("flits", "size"), flits=("flits", "sum"))
+    idx = pd.MultiIndex.from_product([range(m.NT), range(nwin)], names=["core", "window"])
+    g = g.reindex(idx, fill_value=0).reset_index()
+    g.insert(2, "cycle_start", t0 + g["window"] * window)
+    return g
+
+
 def summary(run):
     ev, p = run.events, run.packets
     span = run.cycle_span()

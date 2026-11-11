@@ -33,13 +33,24 @@ def parse_args(argv):
     ap.add_argument("--start", type=int, help="ignore flits before this cycle")
     ap.add_argument("--end", type=int, help="ignore flits after this cycle")
     ap.add_argument("--name", action="append", help="run name (repeat once per file)")
+    ap.add_argument("--window", type=int, default=0,
+                    help="signature window width in cycles (default: same as --bin)")
+    ap.add_argument("--signature-metric", default="injected",
+                    choices=["injected", "ejected", "router"],
+                    help="what a core's signature counts: packets its tile sent (injected, "
+                         "default), packets delivered to it (ejected), or packets through its "
+                         "router (router)")
+    ap.add_argument("--app", action="append",
+                    help="application name for signature titles (repeat once per file)")
+    ap.add_argument("--round", action="append",
+                    help="round/repetition label for signature titles (repeat once per file)")
     ap.add_argument("--no-plots", action="store_true")
     ap.add_argument("--export-events", action="store_true",
                     help="also write the full per-flit table (large)")
     return ap.parse_args(argv)
 
 
-def analyze_one(path, name, a):
+def analyze_one(path, name, a, app=None, rnd=None):
     from .adapters import load_events
     from .model import Run
     ev, meta = load_events(path, a.format, x_tiles=a.x_tiles, y_tiles=a.y_tiles,
@@ -68,6 +79,11 @@ def analyze_one(path, name, a):
     w(metrics.per_link_over_time(run, b), "per_link_over_time.csv")
     w(metrics.per_msg_type(run), "per_msg_type.csv")
     metrics.path_matrix(run).to_csv(os.path.join(out, "path_matrix.csv"))
+    win = a.window or b
+    sig = metrics.signature(run, win, a.signature_metric)
+    sig.insert(0, "round", rnd if rnd is not None else "")
+    sig.insert(0, "app", app or "")
+    w(sig, "signatures.csv")
     w(run.packets, "packets.csv")
     if a.export_events:
         cols = ["cycle", "noc", "x", "y", "dir", "port", "link_name", "link_kind",
@@ -84,6 +100,11 @@ def analyze_one(path, name, a):
     if not a.no_plots:
         from . import plots
         plots.all_plots(run, b, out)
+        plots.signature_plots(sig, win, out, app=app, rnd=rnd, metric=a.signature_metric)
+    s["signature_window_cycles"] = win
+    s["signature_metric"] = a.signature_metric
+    with open(os.path.join(out, "summary.json"), "w") as f:
+        json.dump(s, f, indent=2)
     return s, out
 
 
@@ -113,8 +134,11 @@ def main(argv=None):
     names = a.name or []
     rows = []
     for i, f in enumerate(a.files):
-        name = names[i] if i < len(names) else _default_name(f, a.files)
-        s, out = analyze_one(f, name, a)
+        app = a.app[i] if a.app and i < len(a.app) else None
+        rnd = a.round[i] if a.round and i < len(a.round) else None
+        name = names[i] if i < len(names) else (
+            f"{app}_round{rnd}" if app and rnd is not None else app or _default_name(f, a.files))
+        s, out = analyze_one(f, name, a, app, rnd)
         print(f"== {name}  ->  {out}")
         print(format_summary(s))
         flat = {"run": name, **{k: v for k, v in s.items() if not isinstance(v, (dict, list))}}

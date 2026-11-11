@@ -84,6 +84,29 @@ Useful options: `--bin N` (time-bin width in cycles; default is run length / 100
 | `packets.csv` | every packet: src, dst, type, length, inject/eject cycle, latency, full path |
 | `*.png` | traffic over time, per-source heatmap, link-load map per NoC, path matrix, top paths |
 
+### Application signatures (packets per core per window)
+
+For comparing applications the way the group's "application signature" plots do (one line per core, number of packets per time window), every run also writes:
+
+| File | Contents |
+|---|---|
+| `signatures.csv` | `app, round, core, window, cycle_start, packets, flits`. Every core gets every window, zeros included, so runs with the same `--window` line up |
+| `signatures/core<N>.png` | one plot per core, titled `<app> — Core N, Round R` |
+| `signatures_all_cores.png` | all cores side by side on a shared y-axis |
+
+```bash
+python3 -m noctrace bs_r5.csv --app Blackscholes --round 5 --window 100000 -o ~/noc_results
+# several runs: give --app/--round once per file, in the same order
+python3 -m noctrace r1.csv r2.csv --app hello_world --app hello_world --round 1 --round 2 -o ~/noc_results
+```
+
+* `--window N`: window width in cycles (default: same as `--bin`, i.e. run length / 100). Use the **same window for every run you compare**. Window 0 starts at the first traced cycle.
+* `--signature-metric`: what a core's line counts.
+  * `injected` (default): packets the core's tile sent into the network
+  * `ejected`: packets delivered to the core's tile
+  * `router`: packets passing through the core's router, whether sent, received or forwarded
+* In OpenPiton each tile has one core, so core N is tile N.
+
 ### Definitions
 
 * **Injected flits**: each flit counted once, on the first channel of its packet. This is what the tiles put into the network.
