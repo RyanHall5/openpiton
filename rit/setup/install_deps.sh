@@ -116,7 +116,21 @@ say "8/8 Python packages for noctrace"
 if python3 -c "import pandas, numpy, matplotlib" 2>/dev/null; then
   skip "pandas, numpy, matplotlib importable"
 else
+  # RHEL's system python3 often has no pip. Bootstrap a user-level pip
+  # (~/.local), never touching the system install: try the stdlib ensurepip
+  # first, then PyPA's get-pip.py pinned to this Python version.
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    echo "   no pip for $(python3 --version); installing a user-level pip"
+    if ! python3 -m ensurepip --user >/dev/null 2>&1; then
+      PYV=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+      if ! wget -q -O "$DL/get-pip.py" "https://bootstrap.pypa.io/pip/$PYV/get-pip.py"; then
+        wget -q -O "$DL/get-pip.py" "https://bootstrap.pypa.io/get-pip.py"
+      fi
+      python3 "$DL/get-pip.py" --user
+    fi
+  fi
   python3 -m pip install --user pandas numpy matplotlib
+  python3 -c "import pandas, numpy, matplotlib; print('   pandas', pandas.__version__, '| matplotlib', matplotlib.__version__)"
 fi
 
 say "Done. Next:"
