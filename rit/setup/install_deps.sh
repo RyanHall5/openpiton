@@ -137,5 +137,5 @@ say "Done. Next:"
 cat <<EOF
    source $REPO/rit/setup/openpiton_env.sh
    cd \$PITON_ROOT/build
-   sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_build -ariane \$PITON_VCS_FIX_ARGS
+   pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane
 EOF

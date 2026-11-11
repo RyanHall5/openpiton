@@ -11,7 +11,7 @@ module load synopsys
 bash rit/setup/install_deps.sh        # once; ~20 min, mostly building ld 2.30
 source rit/setup/openpiton_env.sh     # every new terminal
 cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=1 -y_tiles=1 -build_id=ariane_1x1 -vcs_build -ariane $PITON_VCS_FIX_ARGS 2>&1 | tee build.log
+pbuild -sys=manycore -x_tiles=1 -y_tiles=1 -build_id=ariane_1x1 -ariane 2>&1 | tee build.log
 sims -sys=manycore -x_tiles=1 -y_tiles=1 -build_id=ariane_1x1 -vcs_run hello_world.c -ariane -rtl_timeout 10000000
 ```
 **Pass:** the run ends with `Simulation -> PASS (HIT GOOD TRAP)`, and `build/fake_uart.log` holds the program's `printf` output.
@@ -53,7 +53,8 @@ Everything goes under `$HOME`, nothing needs root, and finished steps are skippe
 - `VCS_HOME` is set **before** `piton_settings.bash` is sourced, because that script reads it.
 - `~/ldshim` goes on `PATH` **after** `piton_settings.bash`. That script puts `/usr/bin` near the front of `PATH`, and if the shim isn't ahead of it, the system `ld` wins and Fix 1 silently stops working.
 - `VCS_UVM_HOME=~/opt/uvm-1.1` (Fix 3).
-- `PITON_VCS_FIX_ARGS` holds the extra VCS build arguments for Fixes 1 and 2:
+- **`pbuild`** is a shell function: `sims` with `-vcs_build` and the three extra VCS arguments for Fixes 1 and 2 added. It takes the same arguments as `sims` otherwise, so `pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane` builds a 2x2. Use it for every build; runs (`-vcs_run`) use plain `sims`.
+- `PITON_VCS_FIX_ARGS` holds the same arguments as one variable, for scripts that call `sims` directly:
   `-vcs_build_args=-LDFLAGS -vcs_build_args=-B$HOME/opt/binutils-2.30/bin -vcs_build_args=$HOME/opt/vcs_compat/pthread_yield.o`.
   Some VCS link steps call `ld` from `PATH` (handled by the shim); others go through `g++`, which `-B` points at ld 2.30. Each `-vcs_build_args=` passes **one** argument to VCS, which avoids quoting problems.
 - `PYTHONPATH` gets `rit/`, so `python3 -m noctrace` works from anywhere.
@@ -92,7 +93,7 @@ Run `sims` from `$PITON_ROOT/build`, never from the repo root. Everything under 
 ```bash
 cd $PITON_ROOT/build
 rm -rf manycore/ariane_2x2          # clean out an earlier failed build
-sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_build -ariane $PITON_VCS_FIX_ARGS 2>&1 | tee build_2x2.log
+pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane 2>&1 | tee build_2x2.log
 sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_world.c -ariane -rtl_timeout 10000000
 ```
 - The model ends up in `build/manycore/<build_id>/`. On success `simv` exists there and the log has no `Caught a SIG`.
@@ -119,8 +120,8 @@ sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_wor
 | `riscv64-unknown-elf-gcc: No such file or directory` → `Error compiling rv64 DTS` | Toolchain missing or `RISCV` points elsewhere | Re-run `install_deps.sh`; check `echo $RISCV` |
 | `Can't locate Bit/Vector.pm` | Perl module missing | Re-run `install_deps.sh`, then re-source the env script |
 | `.symtab local symbol at index ... (>= sh_info of ...)` | System `ld` used instead of 2.30 | `which ld` must show `~/ldshim/ld` |
-| Same `sh_info` error on a line starting `/usr/bin/ld:` | The `g++` link step didn't get `-B` | Build command must include `$PITON_VCS_FIX_ARGS` |
-| `undefined reference to 'pthread_yield'` | Stub not built or not passed | `ls ~/opt/vcs_compat/pthread_yield.o`; build command must include `$PITON_VCS_FIX_ARGS` |
+| Same `sh_info` error on a line starting `/usr/bin/ld:` | The `g++` link step didn't get `-B` | Build with `pbuild` (or add `$PITON_VCS_FIX_ARGS` to `sims`) |
+| `undefined reference to 'pthread_yield'` | Stub not built or not passed | `ls ~/opt/vcs_compat/pthread_yield.o`; build with `pbuild` (or add `$PITON_VCS_FIX_ARGS` to `sims`) |
 | `extended character “ is not valid in an identifier` (`uvm_hdl.c`) | VCS using its own UVM | `echo $VCS_UVM_HOME` must print `~/opt/uvm-1.1` |
 | `simv not found in .../build/manycore/<id>` | Not built, or `-build_id` mismatch | `ls $PITON_ROOT/build/manycore/`; rebuild with the same `-build_id` |
 | A fix was applied but the same error persists | VCS reused stale incremental files | `rm -rf $PITON_ROOT/build/manycore/<id>` and rebuild |

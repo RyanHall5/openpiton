@@ -29,7 +29,7 @@ A 1x1 build has no tile-to-tile links; use 2x2 or bigger. Environment and VCS fi
 ```bash
 source ~/openpiton/rit/setup/openpiton_env.sh
 cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_build -ariane $PITON_VCS_FIX_ARGS 2>&1 | tee build_2x2.log
+pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane 2>&1 | tee build_2x2.log
 ```
 
 `-config_rtl=MINIMAL_MONITORING` is fine with `noc_trace` (it's outside that guard), but it removes the built-in router monitor.

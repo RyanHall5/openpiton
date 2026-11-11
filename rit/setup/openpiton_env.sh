@@ -31,7 +31,20 @@ source $PITON_ROOT/piton/piton_settings.bash
 export PATH=$HOME/ldshim:$PATH          # Fix 1: use GNU ld 2.30
 export VCS_UVM_HOME=$HOME/opt/uvm-1.1   # Fix 3: patched private UVM copy
 
-# Fixes 1+2 also need these on every VCS build; use as:
+# Fixes 1+2 also need three extra VCS arguments on every build (-vcs_build),
+# not on runs. Leaving them off fails the link with
+# "undefined reference to 'pthread_yield'" or the ld sh_info error.
+#
+# pbuild: sims with -vcs_build and the fix arguments added. Takes the same
+# arguments as sims otherwise:
+#   pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane
+pbuild() {
+    sims "$@" -vcs_build \
+        -vcs_build_args=-LDFLAGS \
+        -vcs_build_args=-B"$HOME"/opt/binutils-2.30/bin \
+        -vcs_build_args="$HOME"/opt/vcs_compat/pthread_yield.o
+}
+# Same fix arguments as one variable, for scripts that call sims directly:
 #   sims ... -vcs_build $PITON_VCS_FIX_ARGS
 export PITON_VCS_FIX_ARGS="-vcs_build_args=-LDFLAGS -vcs_build_args=-B$HOME/opt/binutils-2.30/bin -vcs_build_args=$HOME/opt/vcs_compat/pthread_yield.o"
 

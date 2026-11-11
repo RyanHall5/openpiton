@@ -35,7 +35,7 @@ Then follow [`docs/rhel9_vcs_setup.md`](docs/rhel9_vcs_setup.md) to build and ru
 ```bash
 source ~/openpiton/rit/setup/openpiton_env.sh
 cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_build -ariane $PITON_VCS_FIX_ARGS
+pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane     # build (sims -vcs_build + fixes)
 sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_world.c -ariane \
      -rtl_timeout 10000000 -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=hello_2x2.csv
 python3 -m noctrace hello_2x2.csv -o ~/noc_results
