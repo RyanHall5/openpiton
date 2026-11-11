@@ -1,6 +1,7 @@
 [submodule "piton/design/chip/tile/ariane"]
 	path = piton/design/chip/tile/ariane
 	url = https://github.com/pulp-platform/ariane.git
+	ignore = dirty
 [submodule "aws"]
 	path = piton/design/aws
 	url = https://github.com/PrincetonUniversity/openpiton-aws.git

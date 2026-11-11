@@ -112,3 +112,18 @@ ucli.key
 cscope.*
 tags
 *.bak
+
+# --- RIT additions (ryan-noc-research) ---
+# VCS / sims leftovers when run from the repo root instead of build/
+/csrc/
+/*.daidir/
+/simv
+/simv.*
+/ucli.key
+/vc_hdrs.h
+/t.v
+/diag.*
+/mem.image
+/symbol.tbl
+# cloned and built by piton/ariane_build_tools.sh
+/piton/riscv-tests/
