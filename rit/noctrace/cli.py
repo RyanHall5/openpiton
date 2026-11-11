@@ -40,6 +40,9 @@ def parse_args(argv):
                     help="what a core's signature counts: packets its tile sent (injected, "
                          "default), packets delivered to it (ejected), or packets through its "
                          "router (router)")
+    ap.add_argument("--signature-unit", default="packets", choices=["packets", "flits"],
+                    help="what the signature plots count per window (default packets; "
+                         "signatures.csv always has both)")
     ap.add_argument("--app", action="append",
                     help="application name for signature titles and signatures.csv (repeat once per file); "
                          "doesn't change the output folder name (use --name for that)")
@@ -101,9 +104,11 @@ def analyze_one(path, name, a, app=None, rnd=None):
     if not a.no_plots:
         from . import plots
         plots.all_plots(run, b, out)
-        plots.signature_plots(sig, win, out, app=app, rnd=rnd, metric=a.signature_metric)
+        plots.signature_plots(sig, win, out, app=app, rnd=rnd, metric=a.signature_metric,
+                              unit=a.signature_unit)
     s["signature_window_cycles"] = win
     s["signature_metric"] = a.signature_metric
+    s["signature_unit"] = a.signature_unit
     with open(os.path.join(out, "summary.json"), "w") as f:
         json.dump(s, f, indent=2)
     return s, out

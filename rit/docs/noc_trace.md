@@ -106,6 +106,7 @@ python3 -m noctrace r1.csv r2.csv --app hello_world --app hello_world --round 1 
   * `injected` (default): packets the core's tile sent into the network
   * `ejected`: packets delivered to the core's tile
   * `router`: packets passing through the core's router, whether sent, received or forwarded
+* `--signature-unit flits` plots flits instead of packets (`signatures.csv` always has both columns).
 * In OpenPiton each tile has one core, so core N is tile N.
 
 ### Definitions
