@@ -9,7 +9,7 @@ Two parts:
 | **`noc_trace_mon`**, the trace monitor | `piton/verif/env/manycore/noc_trace_mon.v.pyv` | Testbench code compiled into every model you build. When a run has `+noc_trace`, it writes one CSV line for every flit crossing every router port. |
 | **`noctrace`**, the analyzer | `rit/noctrace/` | Python tool that reads a trace and writes the tables and plots. |
 
-This guide walks through using them. Every option, file and column is listed in the **[reference](noctrace_reference.md)**, and `python3 -m noctrace --help` prints all the options.
+This guide walks through using them. For copy-paste commands with placeholders and filled-in examples, see **[command templates](command_templates.md)**. Every option, file and column is listed in the **[reference](noctrace_reference.md)**, and `python3 -m noctrace --help` prints all the options.
 
 ---
 

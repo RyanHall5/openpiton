@@ -18,7 +18,7 @@ sims -sys=manycore -x_tiles=1 -y_tiles=1 -build_id=ariane_1x1 -vcs_run hello_wor
 
 Tip: add `source ~/openpiton/rit/setup/openpiton_env.sh` to your `~/.bashrc` if you don't want to source it by hand.
 
-The rest of this document explains what the scripts do and why, for when something breaks.
+Copy-paste templates for these and other common commands are in [`command_templates.md`](command_templates.md). The rest of this document explains what the scripts do and why, for when something breaks.
 
 ---
 

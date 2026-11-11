@@ -11,6 +11,7 @@ rit/
 │   └── pthread_yield.c        source for VCS fix 2
 ├── docs/
 │   ├── rhel9_vcs_setup.md     building and running OpenPiton + Ariane on lab machines
+│   ├── command_templates.md   copy-paste templates for common commands, with examples
 │   ├── noc_trace.md           NoC tracing user guide: workflow, recipes, troubleshooting
 │   └── noctrace_reference.md  every plusarg, option, output file and column
 ├── noctrace/                  Python package: parse + analyze flit traces
@@ -24,6 +25,7 @@ piton/verif/env/manycore/noc_trace_mon.v.pyv   per-flit trace monitor (+noc_trac
 
 | I want to... | Read |
 |---|---|
+| **copy a command** (build, run, analyze...) with placeholders and a real example | [`docs/command_templates.md`](docs/command_templates.md) |
 | set up a lab account, build and run OpenPiton | [`docs/rhel9_vcs_setup.md`](docs/rhel9_vcs_setup.md) |
 | record NoC traffic and analyze it | [`docs/noc_trace.md`](docs/noc_trace.md) (user guide) |
 | look up a run switch, `noctrace` option, output file or column | [`docs/noctrace_reference.md`](docs/noctrace_reference.md) |
