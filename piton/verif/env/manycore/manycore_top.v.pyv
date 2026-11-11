@@ -554,6 +554,11 @@ system system(
     manycore_network_mon network_mon (`CHIP_INT_CLK);
 
 `endif // MINIMAL_MONITORING
+
+    // Per-flit NoC trace (off unless run with +noc_trace). Kept outside
+    // MINIMAL_MONITORING so it also works in minimal-monitoring builds.
+    noc_trace_mon noc_trace_mon (`CHIP_INT_CLK);
+
 `endif // DISABLE_ALL_MONITORS
     // Alexey
     // UART monitor

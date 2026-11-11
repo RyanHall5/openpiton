@@ -24,6 +24,7 @@
 
 cross_module.h
 manycore_network_mon.v
+noc_trace_mon.v
 // -v one_hot_mux_mon.v
 -v sas_intf.v
 // //-v tlb_mon.v

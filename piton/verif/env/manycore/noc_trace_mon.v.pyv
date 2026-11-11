@@ -1,0 +1,120 @@
+// noc_trace_mon: per-flit NoC trace for OpenPiton 2D-mesh builds.
+//
+// Writes one CSV line for every flit that crosses a router port, so the
+// Python tools in noctrace/ can rebuild traffic over time, per core, per
+// path and per link. Every physical channel is logged exactly once:
+//
+//   in  N/E/S/W  at router (x,y)  router-to-router hop (logged at the receiver),
+//                                 or chipset -> chip at the mesh edge (tile 0 W)
+//   in  P        at router (x,y)  core/L1.5/L2 of tile (x,y) injects a flit
+//   out P        at router (x,y)  router delivers a flit to tile (x,y)
+//   out N/E/S/W  at a mesh edge   chip -> chipset (only tile 0 W is legal)
+//
+// OpenPiton routers use credit ("yummy") flow control: a sender only raises
+// valid when the receiver has buffer space, so every cycle with valid high is
+// exactly one flit transferred. Signals are sampled on the falling clock edge,
+// like manycore_network_mon, so they are stable.
+//
+// Off by default. Enable at run time with
+//     -sim_run_args=+noc_trace
+// and optionally pick the output file (default noc_trace.csv in the run dir):
+//     -sim_run_args=+noc_trace_file=my_run.csv
+//
+// Works with MINIMAL_MONITORING builds. Mesh builds only (skipped for xbar).
+// Only standard Verilog-2001 system tasks are used, so it should run on VCS,
+// Icarus and Verilator alike.
+
+`include "sys.h"
+`include "iop.h"
+`include "cross_module.tmp.h"
+
+<%
+    import os
+    import sys
+    sys.path.insert(0, os.path.join(os.environ["DV_ROOT"], 'tools/bin/'))
+    from pyhplib import *
+
+    print("`define NOC_TRACE_X_TILES %d" % PITON_X_TILES)
+    print("`define NOC_TRACE_Y_TILES %d" % PITON_Y_TILES)
+    print("`define NOC_TRACE_NUM_TILES %d" % PITON_NUM_TILES)
+    if (PITON_NETWORK_CONFIG == "xbar_config"):
+        print("`define NOC_TRACE_XBAR")
+%>
+
+module noc_trace_mon (
+    input wire clk
+);
+
+`ifndef NOC_TRACE_XBAR
+
+integer         fd;
+reg             trace_on;
+reg [63:0]      cycle;
+reg [8*256-1:0] trace_file;
+
+initial begin
+    trace_on = 1'b0;
+    fd       = 0;
+    cycle    = 64'd0;
+    if ($test$plusargs("noc_trace")) begin
+        if (!$value$plusargs("noc_trace_file=%s", trace_file))
+            trace_file = "noc_trace.csv";
+        fd = $fopen(trace_file, "w");
+        if (fd == 0) begin
+            $display("noc_trace_mon: ERROR could not open %0s, tracing disabled", trace_file);
+        end
+        else begin
+            trace_on = 1'b1;
+            $fdisplay(fd, "# noc_trace v1");
+            $fdisplay(fd, "# source=openpiton noc_trace_mon");
+            $fdisplay(fd, "# x_tiles=%0d y_tiles=%0d num_tiles=%0d",
+                      `NOC_TRACE_X_TILES, `NOC_TRACE_Y_TILES, `NOC_TRACE_NUM_TILES);
+            $fdisplay(fd, "# cycle counts rising edges of the chip clock from time 0; time is $time in sim units");
+            $fdisplay(fd, "cycle,time,noc,x,y,dir,port,flit");
+            $display("noc_trace_mon: writing flit trace to %0s", trace_file);
+        end
+    end
+end
+
+always @(posedge clk)
+    cycle <= cycle + 64'd1;
+
+always @(negedge clk) begin
+    if (trace_on) begin
+<%
+    ports = ['N', 'E', 'S', 'W', 'P']
+    for y in range(PITON_Y_TILES):
+        for x in range(PITON_X_TILES):
+            flatid = x + y * PITON_X_TILES
+            if flatid >= PITON_NUM_TILES:
+                continue
+            print("`ifdef RTL_TILE%d" % flatid)
+            for nocid in [1, 2, 3]:
+                r = "`TILE%d.user_dynamic_network%d" % (flatid, nocid - 1)
+                # every input port: hops, injections, and chipset->chip at the edge
+                for p in ports:
+                    print("        if (%s.validIn_%s)" % (r, p))
+                    print('            $fdisplay(fd, "%%0d,%%0d,%d,%d,%d,in,%s,%%016h", cycle, $time, %s.dataIn_%s);'
+                          % (nocid, x, y, p, r, p))
+                # ejection to the tile
+                print("        if (%s.validOut_P)" % r)
+                print('            $fdisplay(fd, "%%0d,%%0d,%d,%d,%d,out,P,%%016h", cycle, $time, %s.dataOut_P);'
+                      % (nocid, x, y, r))
+                # outputs that leave the mesh (no receiving router to log them)
+                edge = []
+                if y == 0: edge.append('N')
+                if y == PITON_Y_TILES - 1: edge.append('S')
+                if x == 0: edge.append('W')
+                if x == PITON_X_TILES - 1: edge.append('E')
+                for p in edge:
+                    print("        if (%s.validOut_%s)" % (r, p))
+                    print('            $fdisplay(fd, "%%0d,%%0d,%d,%d,%d,out,%s,%%016h", cycle, $time, %s.dataOut_%s);'
+                          % (nocid, x, y, p, r, p))
+            print("`endif")
+%>
+    end
+end
+
+`endif // NOC_TRACE_XBAR
+
+endmodule
