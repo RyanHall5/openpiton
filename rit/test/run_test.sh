@@ -9,6 +9,9 @@
 # of what it injected.
 #
 #   usage: rit/test/run_test.sh [X] [Y] [packets_per_source]     (default 3 2 60)
+#   Finally checks that rit/docs/noctrace_reference.md documents every option,
+#   plusarg, output file and column (check_docs.py).
+#
 #   needs: iverilog, python3 with pandas/numpy/matplotlib
 set -euo pipefail
 X=${1:-3}; Y=${2:-2}; N=${3:-60}; PERIOD=2500
@@ -36,3 +39,4 @@ iverilog -g2005 -o sim.vvp -I inc -I . tb_mesh.v noc_trace_mon.v one_of_n.v one_
 vvp -n sim.vvp +noc_trace +enable_router_mon > sims.log
 cd "$RIT"
 python3 "$HERE/check_against_gt.py" "$RIT" "$B" "$X" "$Y" $PERIOD
+python3 "$HERE/check_docs.py" "$RIT" "$B/noc_trace.csv"

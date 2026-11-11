@@ -121,11 +121,12 @@ def signature(run, window, metric="injected"):
     """Per-core packet counts per time window: one 'application signature'
     time series per core, in the style of packets-per-window plots.
 
-    Columns: core, window (0, 1, 2, ...), cycle_start, packets, flits.
-    Every core gets every window (zeros included), so series line up across
-    cores and across runs that use the same window size. Window 0 starts at
-    the run's first traced cycle. Off-chip traffic is not a core and is left
-    out. In OpenPiton each tile has one core, so core N = tile N.
+    Columns: core, window, cycle_start, packets, flits.
+    Window k covers cycles [k*window, (k+1)*window), the same grid as the
+    *_over_time bins, so a given cycle lands in the same window in every run
+    that uses the same window size. Every core gets every window from 0 to
+    the last traced cycle (zeros included). Off-chip traffic is not a core
+    and is left out. In OpenPiton each tile has one core, so core N = tile N.
     """
     m = run.mesh
     if metric not in SIGNATURE_METRICS:
@@ -147,16 +148,15 @@ def signature(run, window, metric="injected"):
         core = h["from_node"]
         cyc = h["head_cycle"]
         flits = h["nflits"]
-    t0 = int(run.events["cycle"].min()) if len(run.events) else 0
     t1 = int(run.events["cycle"].max()) if len(run.events) else 0
-    nwin = (t1 - t0) // window + 1
+    nwin = t1 // window + 1
     df = pd.DataFrame({"core": core.to_numpy().astype(int),
-                       "window": ((cyc.to_numpy() - t0) // window).astype(int),
+                       "window": (cyc.to_numpy() // window).astype(int),
                        "flits": flits.to_numpy()})
     g = df.groupby(["core", "window"]).agg(packets=("flits", "size"), flits=("flits", "sum"))
     idx = pd.MultiIndex.from_product([range(m.NT), range(nwin)], names=["core", "window"])
     g = g.reindex(idx, fill_value=0).reset_index()
-    g.insert(2, "cycle_start", t0 + g["window"] * window)
+    g.insert(2, "cycle_start", g["window"] * window)
     return g
 
 

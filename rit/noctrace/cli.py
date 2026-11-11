@@ -1,10 +1,14 @@
-"""noctrace command line.
+"""noctrace: analyze NoC flit traffic from OpenPiton simulations.
 
-    python -m noctrace RUN_FILE [RUN_FILE ...] [options]
+    python3 -m noctrace TRACE [TRACE ...] [options]
 
-Each RUN_FILE is one simulation's output (a noc_trace.csv from noc_trace_mon,
-or a sims.log run with +enable_router_mon). Results go to OUT/<run name>/.
-With several runs, OUT/runs_summary.csv compares them side by side.
+Each TRACE is one simulation's output: a noc_trace CSV written by
+noc_trace_mon (run with +noc_trace), or a sims.log from a run with
++enable_router_mon. Results for each trace go to OUT/<name>/, where <name>
+is the trace's file name (or --name). With several traces,
+OUT/runs_summary.csv compares them side by side.
+
+Full reference: rit/docs/noctrace_reference.md
 """
 import argparse
 import json
@@ -15,42 +19,90 @@ import pandas as pd
 
 from . import load_run, metrics
 
+EXAMPLES = """examples:
+  # analyze one trace with default settings
+  python3 -m noctrace hello_2x2.csv -o ~/noc_results
+
+  # flits per 10k-cycle window, per core and total, titled for a slide
+  python3 -m noctrace hello_2x2.csv --bin 10000 --window 10000 \\
+          --signature-unit flits --app hello_world --round 1 -o ~/noc_results
+
+  # compare three runs (one --app/--round per file, in file order)
+  python3 -m noctrace a.csv b.csv c.csv --app bs --app bs --app bs \\
+          --round 1 --round 2 --round 3 -o ~/noc_results
+
+  # only NoC2, only cycles 100k-500k
+  python3 -m noctrace run.csv --noc 2 --start 100000 --end 500000
+
+  # old sims.log from a run with +enable_router_mon
+  python3 -m noctrace sims.log --x-tiles 2 --y-tiles 2
+
+full reference: rit/docs/noctrace_reference.md
+"""
+
 
 def parse_args(argv):
-    ap = argparse.ArgumentParser(prog="noctrace", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("files", nargs="+", help="simulation output files")
-    ap.add_argument("-o", "--out", default="noc_analysis", help="output directory")
-    ap.add_argument("--format", default="auto", choices=["auto", "noc_trace", "router_mon"])
-    ap.add_argument("--bin", type=int, default=0,
-                    help="time-bin width in cycles (default: run length / 100)")
-    ap.add_argument("--x-tiles", type=int, help="mesh width (if the file doesn't say)")
-    ap.add_argument("--y-tiles", type=int, help="mesh height")
-    ap.add_argument("--clock-period", type=int,
-                    help="sim time units per cycle for sims.log (default: inferred)")
-    ap.add_argument("--chip-id", type=int, default=0, help="this chip's id (default 0)")
-    ap.add_argument("--noc", default="", help="only these NoCs, e.g. 1,3")
-    ap.add_argument("--start", type=int, help="ignore flits before this cycle")
-    ap.add_argument("--end", type=int, help="ignore flits after this cycle")
-    ap.add_argument("--name", action="append", help="run name (repeat once per file)")
-    ap.add_argument("--window", type=int, default=0,
-                    help="signature window width in cycles (default: same as --bin)")
-    ap.add_argument("--signature-metric", default="injected",
-                    choices=["injected", "ejected", "router"],
-                    help="what a core's signature counts: packets its tile sent (injected, "
-                         "default), packets delivered to it (ejected), or packets through its "
-                         "router (router)")
-    ap.add_argument("--signature-unit", default="packets", choices=["packets", "flits"],
-                    help="what the signature plots count per window (default packets; "
-                         "signatures.csv always has both)")
-    ap.add_argument("--app", action="append",
-                    help="application name for signature titles and signatures.csv (repeat once per file); "
-                         "doesn't change the output folder name (use --name for that)")
-    ap.add_argument("--round", action="append",
-                    help="round/repetition label for signature titles (repeat once per file)")
-    ap.add_argument("--no-plots", action="store_true")
-    ap.add_argument("--export-events", action="store_true",
-                    help="also write the full per-flit table (large)")
+    ap = argparse.ArgumentParser(
+        prog="python3 -m noctrace", description=__doc__.split("Full reference")[0],
+        epilog=EXAMPLES, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("files", nargs="+", metavar="TRACE",
+                    help="one or more simulation output files (noc_trace .csv / .csv.gz, or sims.log)")
+
+    g = ap.add_argument_group("output")
+    g.add_argument("-o", "--out", default="noc_analysis", metavar="DIR",
+                   help="directory for results; each trace gets DIR/<name>/ (default: ./noc_analysis)")
+    g.add_argument("--name", action="append", metavar="NAME",
+                   help="results folder name for a trace, instead of its file name; "
+                        "repeat once per TRACE, in order")
+    g.add_argument("--no-plots", action="store_true",
+                   help="write CSV/JSON/TXT only, skip the PNG plots (faster)")
+    g.add_argument("--export-events", action="store_true",
+                   help="also write events.csv.gz: every flit on every channel, decoded (large)")
+
+    g = ap.add_argument_group("time binning")
+    g.add_argument("--bin", type=int, default=0, metavar="CYCLES",
+                   help="bin width for the *_over_time tables and plots "
+                        "(default: run length / 100)")
+    g.add_argument("--window", type=int, default=0, metavar="CYCLES",
+                   help="window width for the per-core signatures (default: same as --bin). "
+                        "Use the same value for every run you compare")
+
+    g = ap.add_argument_group("per-core signatures")
+    g.add_argument("--signature-metric", default="injected",
+                   choices=["injected", "ejected", "router"],
+                   help="what each core's line counts: injected = packets its tile sent "
+                        "(default), ejected = packets delivered to it, router = packets "
+                        "passing through its router")
+    g.add_argument("--signature-unit", default="packets", choices=["packets", "flits"],
+                   help="what the signature plots show per window (default: packets). "
+                        "signatures.csv always has both")
+    g.add_argument("--app", action="append", metavar="NAME",
+                   help="application name for plot titles and the CSVs' app column; "
+                        "repeat once per TRACE. Does not change the folder name")
+    g.add_argument("--round", action="append", metavar="LABEL",
+                   help="round/repetition label for plot titles and the CSVs' round column; "
+                        "repeat once per TRACE")
+
+    g = ap.add_argument_group("filtering")
+    g.add_argument("--noc", default="", metavar="LIST",
+                   help="only these NoCs, comma-separated, e.g. 2 or 1,3 (default: all)")
+    g.add_argument("--start", type=int, metavar="CYCLE",
+                   help="drop flits before this cycle")
+    g.add_argument("--end", type=int, metavar="CYCLE",
+                   help="drop flits after this cycle")
+
+    g = ap.add_argument_group("input format (usually automatic)")
+    g.add_argument("--format", default="auto", choices=["auto", "noc_trace", "router_mon"],
+                   help="input type: noc_trace = noc_trace_mon CSV, router_mon = sims.log "
+                        "with +enable_router_mon (default: detect)")
+    g.add_argument("--x-tiles", type=int, metavar="N",
+                   help="mesh width; needed for sims.log if the log doesn't state it "
+                        "(noc_trace CSVs record it themselves)")
+    g.add_argument("--y-tiles", type=int, metavar="N", help="mesh height (as --x-tiles)")
+    g.add_argument("--clock-period", type=int, metavar="T",
+                   help="sims.log only: sim time units per clock cycle (default: inferred)")
+    g.add_argument("--chip-id", type=int, default=0, metavar="ID",
+                   help="this chip's id; packets to other ids count as off-chip (default: 0)")
     return ap.parse_args(argv)
 
 

@@ -1,30 +1,33 @@
-# NoC flit-traffic tracing and analysis (noc_trace_mon + noctrace)
+# NoC traffic tracing: user guide
+
+Record every flit moving through OpenPiton's network-on-chip during a simulation, then turn the recording into tables and plots: traffic over time, per core, per path, per link, and latency.
 
 Two parts:
 
-| Part | What it is |
-|---|---|
-| `piton/verif/env/manycore/noc_trace_mon.v.pyv` | A testbench monitor that writes one CSV line for **every flit crossing every router port**, on all three NoCs. Off unless you pass `+noc_trace`. |
-| `rit/noctrace/` | Python package that reads simulator output, rebuilds every packet's source, destination, path and latency, and writes CSV tables + plots: traffic over time (total, per core, per path, per link, per NoC, per message type). |
+| Part | Where | What it does |
+|---|---|---|
+| **`noc_trace_mon`**, the trace monitor | `piton/verif/env/manycore/noc_trace_mon.v.pyv` | Testbench code compiled into every model you build. When a run has `+noc_trace`, it writes one CSV line for every flit crossing every router port. |
+| **`noctrace`**, the analyzer | `rit/noctrace/` | Python tool that reads a trace and writes the tables and plots. |
 
-The Python side reads two formats today:
-
-* **`noc_trace.csv`** from the monitor above. Complete and exact: sees injection, ejection, tile-local traffic and chipset traffic, so latency is available.
-* **`sims.log`** from OpenPiton's built-in router monitor (`+enable_router_mon`, already in `manycore_network_mon.v.pyv`). No RTL change needed, but it only logs flits *leaving* a router on N/S/E/W. So: no tile-local traffic, no chipset-to-chip flits, sources are inferred, and there is no latency. Router-to-router link counts are still exact.
-
-Both were checked against ground truth (see *Self-test*).
+This guide walks through using them. Every option, file and column is listed in the **[reference](noctrace_reference.md)**, and `python3 -m noctrace --help` prints all the options.
 
 ---
 
-## 1. The monitor is already in this branch
+## Workflow at a glance
 
-`piton/verif/env/manycore/noc_trace_mon.v.pyv` is listed in `manycore.flist` (and `.flist.jtag`) and instantiated in `manycore_top.v.pyv`, outside `MINIMAL_MONITORING`. It's compiled into every model you build from this branch, and it stays idle unless you run with `+noc_trace`.
+| Step | Command | How often | Produces |
+|---|---|---|---|
+| 1. Install tools | `bash rit/setup/install_deps.sh` | once per account | toolchain + VCS fixes in `~/tools`, `~/opt`, `~/.local` |
+| 2. Load environment | `source rit/setup/openpiton_env.sh` | every new terminal | `sims`, `pbuild`, `PITON_ROOT`, Python path |
+| 3. Build a model | `pbuild ... -build_id=<id>` | once per mesh size, and after pulling RTL/testbench changes | `build/manycore/<id>/simv`, with the monitor inside |
+| 4. Run with tracing | `sims ... -vcs_run <test> -sim_run_args=+noc_trace ...` | once per experiment | `build/<trace>.csv` |
+| 5. Analyze | `python3 -m noctrace <trace>.csv -o ~/noc_results` | once per trace | `~/noc_results/<trace>/`: tables and plots |
 
-If you built a model **before** pulling this branch, rebuild it, because older models don't contain the monitor.
+Steps 1–2 are covered in [`rhel9_vcs_setup.md`](rhel9_vcs_setup.md).
 
-## 2. Build a multi-tile model
+---
 
-A 1x1 build has no tile-to-tile links; use 2x2 or bigger. Environment and VCS fix flags are covered in [`rhel9_vcs_setup.md`](rhel9_vcs_setup.md):
+## Step 3: Build
 
 ```bash
 source ~/openpiton/rit/setup/openpiton_env.sh
@@ -32,143 +35,182 @@ cd $PITON_ROOT/build
 pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane 2>&1 | tee build_2x2.log
 ```
 
-`-config_rtl=MINIMAL_MONITORING` is fine with `noc_trace` (it's outside that guard), but it removes the built-in router monitor.
+- **No extra option is needed for tracing.** On this branch the monitor is compiled into every model automatically. `pbuild` is `sims ... -vcs_build` plus the RHEL 9 fix arguments.
+- **Use at least 2x2.** A 1x1 has no tile-to-tile links.
+- **Rebuild after pulling** changes to RTL or the testbench. A model only contains the code that existed when it was built. Use a new `-build_id` to keep the old model.
+- `-config_rtl=MINIMAL_MONITORING` is fine; the monitor still works.
 
-## 3. Run with tracing on
+To check whether an existing model has the monitor:
+```bash
+grep -rlq noc_trace_mon $PITON_ROOT/build/manycore/<build_id>/ && echo yes || echo "no: rebuild"
+```
+
+## Step 4: Run with tracing on
 
 ```bash
+cd $PITON_ROOT/build
 sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_world.c -ariane \
-  -rtl_timeout 10000000 \
-  -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=hello_2x2.csv
+     -rtl_timeout 10000000 \
+     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=hello_2x2_r1.csv
 ```
 
-* The trace lands in the run directory (`$PITON_ROOT/build/`). Give each run its own `+noc_trace_file=` name, or it overwrites `noc_trace.csv`.
-* Add `-sim_run_args=+enable_router_mon` if you also want the built-in monitor's lines in `sims.log`.
-* Even a single-threaded program makes mesh traffic: OpenPiton's L2 is split into slices across the tiles, so core 0's misses travel to other tiles' L2 slices, and memory traffic goes through tile 0 to the chipset.
-* File size is about 40 bytes per flit per channel. Long runs get big; gzip works (`noctrace` reads `.csv.gz`).
+| Run argument | Required | Meaning |
+|---|---|---|
+| `-sim_run_args=+noc_trace` | **yes** | turns tracing on (off by default) |
+| `-sim_run_args=+noc_trace_file=NAME` | recommended | output file name (default `noc_trace.csv`, overwritten every run) |
+| `-sim_run_args=+enable_router_mon` | no | also writes OpenPiton's built-in router lines into `sims.log` (not needed with the trace) |
 
-## 4. Analyze
+Each `-sim_run_args=` carries **one** plusarg. The trace is written to the directory you ran `sims` from.
 
-`install_deps.sh` installs the Python packages, and the env script puts `rit/` on `PYTHONPATH`, so this works from any directory:
+**Name traces after what they are**, e.g. `<app>_<mesh>_r<round>.csv` (`hello_2x2_r1.csv`, `bodytrack_4x4_r5.csv`). The results folder is named after the file, so the name tells you which run each set of results came from.
+
+**Check it worked:**
 ```bash
-python3 -m noctrace $PITON_ROOT/build/hello_2x2.csv -o ~/noc_results
+grep -E "noc_trace_mon|PASS|FAIL" sims.log   # "noc_trace_mon: writing flit trace to hello_2x2_r1.csv" and PASS
+head -6 hello_2x2_r1.csv                      # 4 "#" lines, the column header, then data rows
 ```
-Write results **outside the repo** (or into a git-ignored `results/` folder). See *Sharing data* below.
 
-Several runs at once (different programs and/or builds) also writes `results/runs_summary.csv` comparing them:
+## Step 5: Analyze
+
 ```bash
-python3 -m noctrace runA.csv runB.csv runC.csv --name hello --name matmul --name stream -o results
+python3 -m noctrace hello_2x2_r1.csv -o ~/noc_results
+cat ~/noc_results/hello_2x2_r1/summary.txt
 ```
 
-Old `sims.log` from a run with `+enable_router_mon` (give the mesh size if the log doesn't state it):
-```bash
-python3 -m noctrace $PITON_ROOT/build/sims.log --x-tiles 2 --y-tiles 2 -o results
-```
+This takes seconds to about a minute, depending on trace size. Results go to `~/noc_results/hello_2x2_r1/`. Write results **outside the repo**.
 
-Useful options: `--bin N` (time-bin width in cycles; default is run length / 100), `--noc 1,3`, `--start/--end` (cycle window), `--export-events` (full per-flit table), `--no-plots`, `--clock-period` (sims.log only; normally inferred).
+### What you get
 
-### What you get, per run (`results/<run>/`)
-
-| File | Contents |
+| File | What it answers |
 |---|---|
-| `summary.txt` / `.json` | totals, injection rate, per-NoC packets/flits/hops/latency, busiest link, warnings |
-| `total_over_time.csv` | per bin and NoC: injected flits, router-to-router flit-hops, all-channel flits |
-| `per_source_over_time.csv` | flits injected by each tile (and offchip) per bin and NoC |
-| `per_dest_over_time.csv` | flits addressed to each destination per bin |
-| `per_path.csv` | per (NoC, src, dst): packets, flits, flit-hops, hops, mean/max latency |
-| `per_path_over_time.csv` | per (NoC, src, dst) per bin |
-| `per_link.csv` | per directed channel: flits, packets, utilization (flits/cycle) |
-| `per_link_over_time.csv` | per channel per bin, with utilization |
-| `per_msg_type.csv` | packets/flits/latency by OpenPiton message type (LOAD_REQ, DATA_ACK, ...) |
-| `path_matrix.csv` | src x dst flit matrix |
-| `packets.csv` | every packet: src, dst, type, length, inject/eject cycle, latency, full path |
-| `*.png` | traffic over time, per-source heatmap, link-load map per NoC, path matrix, top paths |
+| `summary.txt` | Start here: totals, per-NoC packets/flits/hops/latency, busiest link, warnings |
+| `traffic_over_time.png`, `total_over_time.csv` | How much traffic is on each NoC over time? |
+| `signatures/core<N>.png`, `signatures.csv` | How much does each core send over time? (one plot per core) |
+| `signatures/total.png`, `signatures_total.csv` | The same, all cores added together |
+| `signatures_all_cores.png` | All cores side by side on one scale |
+| `injection_by_source.png`, `per_source_over_time.csv` | Who's sending, and when? (heatmap, includes off-chip) |
+| `path_matrix.png`, `per_path.csv`, `top_paths.png` | Who sends to whom, how much, and how fast? |
+| `link_map.png`, `per_link.csv` | Which links are busiest? |
+| `per_msg_type.csv` | Which coherence messages dominate? |
+| `packets.csv` | Every packet: source, destination, type, path, latency |
 
-### Application signatures (packets per core per window)
+All columns are described in the [reference, §4](noctrace_reference.md#4-output-files).
 
-For comparing applications the way the group's "application signature" plots do (one line per core, number of packets per time window), every run also writes:
+### Viewing results from the lab machine
 
-| File | Contents |
-|---|---|
-| `signatures.csv` | `app, round, core, window, cycle_start, packets, flits`. Every core gets every window, zeros included, so runs with the same `--window` line up |
-| `signatures/core<N>.png` | one plot per core, titled `<app> — Core N, Round R` |
-| `signatures_total.csv`, `signatures/total.png` | all cores added together per window, same format |
-| `signatures_all_cores.png` | all cores side by side on a shared y-axis |
+- **Text:** `cat`/`less` the `summary.txt` and CSVs.
+- **Plots and CSVs:** in MobaXterm's **SFTP** sidebar, enter `/home/<you>/noc_results/<trace>/` in the path box. Double-click a PNG to open it on your PC, or drag files to your desktop. CSVs open in Excel.
 
+---
+
+## Recipes
+
+**Flits per 10,000 cycles, per core and total, labeled for slides:**
 ```bash
-python3 -m noctrace bs_r5.csv --app Blackscholes --round 5 --window 100000 -o ~/noc_results
-# several runs: give --app/--round once per file, in the same order
-python3 -m noctrace r1.csv r2.csv --app hello_world --app hello_world --round 1 --round 2 -o ~/noc_results
+python3 -m noctrace hello_2x2_r1.csv --bin 10000 --window 10000 --signature-unit flits \
+        --app hello_world --round 1 -o ~/noc_results
 ```
+`--bin` sets the bin size for the over-time tables and plots; `--window` sets it for the per-core signatures. Plots are titled "hello_world — Core N, Round 1".
 
-* `--app` and `--round` only label the plots and `signatures.csv`. The output folder is still named after the trace file (or `--name`), so name trace files after app, mesh and round, e.g. `+noc_trace_file=bodytrack_4x4_r5.csv`.
-* `--window N`: window width in cycles (default: same as `--bin`, i.e. run length / 100). Use the **same window for every run you compare**. Window 0 starts at the first traced cycle.
-* `--signature-metric`: what a core's line counts.
-  * `injected` (default): packets the core's tile sent into the network
-  * `ejected`: packets delivered to the core's tile
-  * `router`: packets passing through the core's router, whether sent, received or forwarded
-* `--signature-unit flits` plots flits instead of packets (`signatures.csv` always has both columns).
-* In OpenPiton each tile has one core, so core N is tile N.
-
-### Definitions
-
-* **Injected flits**: each flit counted once, on the first channel of its packet. This is what the tiles put into the network.
-* **Flit-hops**: each flit counted on every router-to-router channel it crosses. This is what loads the links. A 3-hop packet of 5 flits = 5 injected flits, 15 flit-hops.
-* **Utilization**: flits on a channel / cycles. 1.0 is the maximum (one 64-bit flit per cycle).
-* **Latency**: from the header entering the network at the source port to the tail leaving at the destination port, in cycles.
-* **Cycle**: rising edges of the chip clock since time 0, counted by the monitor. For sims.log, `$time / clock period`.
-* **Names**: `tile5(1,1)` is tile 5 at x=1, y=1 (flat id = x + y * x_tiles). `r5(1,1)` is that tile's router. y grows southward, as in the RTL.
-
-## How packets are rebuilt
-
-1. Each flit event maps to the directed channel it crossed (tile to router, router to router, router to tile, chip to/from offchip).
-2. OpenPiton's routers are wormhole with no virtual channels, so a channel carries whole packets back to back: header flit, then `length` body flits (bits [29:22] of the header).
-3. Hops are joined into end-to-end packets using the routers' own rule from `dynamic_input_route_request_calc.v`: X first, then Y, then the header's fbits at the destination. Off-chip destinations go to (0,0) and leave west. The next hop has to be on the channel that rule predicts, carry identical flits, and start no earlier.
-
-Header layout, message-type names and routing all come from the OpenPiton source (`define.h.pyv`, `dynamic_input_*`). If your version changes message types, `noctrace.header.load_msg_types(path_to_define.h.pyv)` reloads them.
-
-## Using it from Python
-
-```python
-# with openpiton_env.sh sourced (or sys.path.insert(0, "<repo>/rit"))
-from noctrace import load_run, metrics
-
-run = load_run("hello_2x2.csv")
-run.packets          # one row per packet
-run.events           # one row per flit per channel (cycle, noc, link_name, pkt, src, dst, ...)
-run.links            # one row per channel
-metrics.total_over_time(run, bin_cycles=500)
-```
-
-## Adding another simulator's output
-
-Write one function that returns a pandas DataFrame with columns `cycle, time, noc, x, y, dir, port, flit` (`dir` = `in`/`out` at router (x,y), `port` = N/E/S/W/P, `flit` = 64-bit int) plus a `meta` dict with `x_tiles`, `y_tiles`, `has_p_ports`. Register it in `ADAPTERS` in `rit/noctrace/adapters.py`. Everything downstream is unchanged. A CSV with those column names already works as-is.
-
-Packet rebuilding (step 3 above) assumes OpenPiton's header layout and XY routing. A different NoC (other header format, VCs, adaptive routing) needs its own `decode_cols`/`next_node`. The per-link and over-time counts don't depend on that.
-
-## Self-test
-
-`rit/test/run_test.sh [X] [Y] [packets]` builds an X x Y mesh of the **real OpenPiton router RTL** (`dynamic_node_top_wrap`, 3 NoCs per tile) in Icarus Verilog. It drives random credit-based traffic from every tile and a chipset stub on tile 0 west, runs the generated `noc_trace_mon` unchanged, and also prints the built-in router monitor's exact line format. Then it checks the reconstruction against the testbench's own record of what it injected:
-
+**Choose what a core's line counts:**
 ```bash
-rit/test/run_test.sh 3 2 60      # needs iverilog; no VCS or env script required
+... --signature-metric injected   # packets/flits the core's tile sent (default)
+... --signature-metric ejected    # packets/flits delivered to the core's tile
+... --signature-metric router     # everything passing through the core's router
 ```
 
-It passes on 3x2, 2x3 and 4x4 (12,375 packets). Every channel's flit count matches XY routing, every (src, dst) count matches, and every latency is measured.
+**Compare several runs:** list all the traces, and give `--app`/`--round` once per trace, in the same order:
+```bash
+python3 -m noctrace bt_4x4_r1.csv bt_4x4_r2.csv bt_4x4_r3.csv \
+        --app bodytrack --app bodytrack --app bodytrack --round 1 --round 2 --round 3 \
+        --window 10000 -o ~/noc_results
+cat ~/noc_results/runs_summary.csv      # one row per run
+```
+Use the **same `--window`/`--bin` for every run** you compare. Windows and bins are aligned to cycle 0, so the same cycle falls in the same window in every run.
+
+**Compare mesh sizes:** build each size under its own `-build_id`, run the same test with tracing on each, then analyze the traces together as above.
+
+**Zoom into part of a run:**
+```bash
+python3 -m noctrace run.csv --start 1000000 --end 1200000 --bin 1000 -o ~/noc_zoom
+```
+
+**One NoC only:**
+```bash
+python3 -m noctrace run.csv --noc 2 -o ~/noc_results_noc2
+```
+
+**Find the slowest packets:**
+```bash
+python3 -c "import pandas as pd; p=pd.read_csv('packets.csv'); print(p.nlargest(10,'latency')[['noc','src','dst','msg_name','flits','inject_cycle','latency']].to_string())"
+```
+
+**Your own analysis in Python:** see the [reference, §6](noctrace_reference.md#6-python-api).
+
+**An old `sims.log` instead of a trace** (needs `+enable_router_mon` on that run; incomplete, see below):
+```bash
+python3 -m noctrace sims.log --x-tiles 2 --y-tiles 2 -o ~/noc_results
+```
+
+---
+
+## Why the trace instead of `sims.log`
+
+OpenPiton's built-in router monitor (`+enable_router_mon`) only logs flits leaving a router toward another router.
+
+| Question | `sims.log` | trace |
+|---|---|---|
+| How busy is each router-to-router link? | ✅ exact | ✅ exact |
+| How much traffic did each core send? | ⚠️ guessed | ✅ exact |
+| Who sent what to whom? | ⚠️ partly, guessed | ✅ exact |
+| Core ↔ its own L2 slice | ❌ invisible | ✅ |
+| Memory responses from the chipset | ❌ missing | ✅ |
+| Latency | ❌ | ✅ |
+
+In the self-test, `sims.log` saw 1,010 of 1,170 packets.
+
+---
 
 ## Sharing data
 
-Traces and results stay **out of Git**: a trace is about 40 bytes per flit per channel, so long runs reach hundreds of MB. `build/` is already ignored, and `rit/.gitignore` ignores `results/`, `noc_analysis/` and trace files. Put traces and results in the team's shared storage, and record with each one:
+Traces and results stay **out of Git**: a trace is about 40 bytes per flit per channel, so long runs reach hundreds of MB. `build/` is git-ignored, and so are `results/`, `noc_analysis/` and trace files under `rit/`. Put traces and results in the team's shared storage, and record with each one:
 - the branch commit (`git rev-parse --short HEAD`)
 - the build command (mesh size, `-config_rtl` options)
 - the test program and run arguments
 
-That's what makes a result reproducible. Small summaries (`summary.json`, a few plots) are fine to commit when they back up a write-up.
+Small summaries (`summary.json`, a few plots) are fine to commit when they back up a write-up.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| No `noc_trace_mon: writing...` line, no CSV | Model built before the monitor existed, or `+noc_trace` missing | Check the model (Step 3) and rebuild if needed; add `-sim_run_args=+noc_trace` |
+| `noc_trace_mon: ERROR could not open ...` | Bad path or no write permission | Use a plain file name; run from `$PITON_ROOT/build` |
+| CSV has only the header | Run ended before any NoC traffic, or the run failed | Check `sims.log` for PASS/FAIL |
+| `No module named noctrace` | Env script not sourced | `source ~/openpiton/rit/setup/openpiton_env.sh` |
+| `No module named pandas` / `matplotlib` | Python packages missing | `bash rit/setup/install_deps.sh` (step 8) |
+| `ValueError: Multi-dimensional indexing ...` while plotting | Old `noctrace` with the lab's old system matplotlib | `git pull` (fixed) |
+| `mesh size unknown; pass --x-tiles and --y-tiles` | `sims.log` input | Add `--x-tiles N --y-tiles N` |
+| `no router-monitor lines found` | `sims.log` from a run without `+enable_router_mon` | Use a trace, or rerun with that plusarg |
+| Warning `header(s) point outside the mesh` | Wrong mesh size given | Fix `--x-tiles`/`--y-tiles` |
+| A few "cut off" / "never seen leaving" warnings | Traffic in flight when the run ended | Normal |
+
+---
+
+## Self-test
+
+`rit/test/run_test.sh [X] [Y] [packets]` checks the whole flow without VCS. It builds an X×Y mesh of OpenPiton's real router RTL in Icarus Verilog, drives random traffic, runs the generated monitor unchanged, and compares `noctrace`'s results with what the testbench actually sent. It also checks that the docs cover every option and output column.
+
+```bash
+rit/test/run_test.sh 3 2 60      # needs iverilog
+```
 
 ## Limits
 
-* Not yet confirmed inside a full OpenPiton VCS build. The monitor's hierarchical paths (`` `TILEn.user_dynamic_networkK.validIn_X``) follow `cross_module.h.pyv` and `tile.v.pyv`, and the generated code compiles and runs against the real router RTL, but your first 2x2 VCS build is the real check.
-* 2D-mesh builds only (the xbar network config is skipped).
-* Builds with fewer tiles than x_tiles * y_tiles: edges next to a missing tile aren't traced.
-* If a tile's clock is gated off, its router isn't sampled correctly (the monitor runs on the ungated chip clock).
-* Speed is about 8 s per 300k flit events end to end on a laptop-class core, which is fine for single programs. Use `--start/--end` or `--noc` on very long runs.
+- 2D-mesh builds only (not `xbar_config`).
+- Builds with fewer tiles than x_tiles × y_tiles: edges next to a missing tile aren't traced.
+- A tile whose clock is gated off isn't sampled correctly (the monitor uses the ungated chip clock).
+- Speed: about 8 s per 300k flit events end to end. Use `--start/--end` or `--noc` on very long runs.
+- Packet rebuilding assumes OpenPiton's header format and XY routing. Another simulator's output needs a reader ([reference, §7](noctrace_reference.md#7-adding-another-input-format)).

@@ -7,17 +7,27 @@ rit/
 ├── README.md                  you are here
 ├── setup/
 │   ├── install_deps.sh        one-time install of toolchain + RHEL 9 / VCS 2017 fixes
-│   ├── openpiton_env.sh       source in every terminal
+│   ├── openpiton_env.sh       source in every terminal (defines pbuild)
 │   └── pthread_yield.c        source for VCS fix 2
 ├── docs/
 │   ├── rhel9_vcs_setup.md     building and running OpenPiton + Ariane on lab machines
-│   └── noc_trace.md           tracing NoC flits and analyzing them with noctrace
+│   ├── noc_trace.md           NoC tracing user guide: workflow, recipes, troubleshooting
+│   └── noctrace_reference.md  every plusarg, option, output file and column
 ├── noctrace/                  Python package: parse + analyze flit traces
-└── test/                      self-test for the trace flow (Icarus, no VCS)
+└── test/                      self-test (Icarus, no VCS) + docs coverage check
 
 piton/verif/env/manycore/noc_trace_mon.v.pyv   per-flit trace monitor (+noc_trace)
   (hooked up in manycore_top.v.pyv and manycore.flist / manycore.flist.jtag)
 ```
+
+## Documentation
+
+| I want to... | Read |
+|---|---|
+| set up a lab account, build and run OpenPiton | [`docs/rhel9_vcs_setup.md`](docs/rhel9_vcs_setup.md) |
+| record NoC traffic and analyze it | [`docs/noc_trace.md`](docs/noc_trace.md) (user guide) |
+| look up a run switch, `noctrace` option, output file or column | [`docs/noctrace_reference.md`](docs/noctrace_reference.md) |
+| see all `noctrace` options from the terminal | `python3 -m noctrace --help` |
 
 ## New to this repo
 
@@ -35,10 +45,11 @@ Then follow [`docs/rhel9_vcs_setup.md`](docs/rhel9_vcs_setup.md) to build and ru
 ```bash
 source ~/openpiton/rit/setup/openpiton_env.sh
 cd $PITON_ROOT/build
-pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane     # build (sims -vcs_build + fixes)
+pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane     # build (monitor included automatically)
 sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_world.c -ariane \
-     -rtl_timeout 10000000 -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=hello_2x2.csv
-python3 -m noctrace hello_2x2.csv -o ~/noc_results
+     -rtl_timeout 10000000 -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=hello_2x2_r1.csv
+python3 -m noctrace hello_2x2_r1.csv --bin 10000 --window 10000 -o ~/noc_results
+cat ~/noc_results/hello_2x2_r1/summary.txt
 ```
 
 ## Working in this repo
