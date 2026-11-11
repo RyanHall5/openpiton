@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# self-test builds (rit/test/run_test.sh)
+test/build_*/
+
+# analysis output and traces, wherever they land under rit/
+results/
+noc_analysis/
+noc_trace*.csv
+noc_trace*.csv.gz
+events.csv.gz
