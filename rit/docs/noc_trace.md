@@ -92,6 +92,7 @@ For comparing applications the way the group's "application signature" plots do 
 |---|---|
 | `signatures.csv` | `app, round, core, window, cycle_start, packets, flits`. Every core gets every window, zeros included, so runs with the same `--window` line up |
 | `signatures/core<N>.png` | one plot per core, titled `<app> — Core N, Round R` |
+| `signatures_total.csv`, `signatures/total.png` | all cores added together per window, same format |
 | `signatures_all_cores.png` | all cores side by side on a shared y-axis |
 
 ```bash

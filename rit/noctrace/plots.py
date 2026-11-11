@@ -254,6 +254,21 @@ def signature_plots(sig, window, outdir, app=None, rnd=None, metric="injected",
         plt.close(fig)
         made.append(p)
 
+    # all cores combined, same style as the per-core plots
+    tot = sig.groupby("window", as_index=False)[unit].sum()
+    fig, ax = plt.subplots(figsize=(8, 4.2))
+    ax.plot(tot["window"].to_numpy(), tot[unit].to_numpy(), color=NOC_COLORS[1], lw=1.6)
+    t = f"{app} — All cores" if app else "All cores"
+    ax.set_title(t + (f", Round {rnd}" if rnd is not None else ""), loc="center")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_ylim(bottom=0)
+    fig.tight_layout()
+    p = os.path.join(d, "total.png")
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    made.append(p)
+
     n = len(cores)
     ncol = min(4, n)
     nrow = (n + ncol - 1) // ncol

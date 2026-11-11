@@ -88,6 +88,8 @@ def analyze_one(path, name, a, app=None, rnd=None):
     sig.insert(0, "round", rnd if rnd is not None else "")
     sig.insert(0, "app", app or "")
     w(sig, "signatures.csv")
+    tot = sig.groupby(["app", "round", "window", "cycle_start"], as_index=False)[["packets", "flits"]].sum()
+    w(tot, "signatures_total.csv")
     w(run.packets, "packets.csv")
     if a.export_events:
         cols = ["cycle", "noc", "x", "y", "dir", "port", "link_name", "link_kind",
