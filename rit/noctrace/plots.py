@@ -19,14 +19,20 @@ SEQ = LinearSegmentedColormap.from_list(
     "seq_blue", ["#f3f7fd", "#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5",
                  "#256abf", "#184f95", "#0d366b"])
 
-plt.rcParams.update({
+_RC = {
     "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
     "text.color": TEXT, "axes.labelcolor": TEXT2, "xtick.color": TEXT2, "ytick.color": TEXT2,
     "axes.edgecolor": GRID, "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.8,
     "axes.spines.top": False, "axes.spines.right": False, "font.size": 9,
     "axes.titlesize": 11, "axes.titleweight": "bold", "axes.titlelocation": "left",
     "legend.frameon": False,
-})
+}
+# Older matplotlib (e.g. RHEL's system package) lacks some keys; skip those.
+for _k, _v in _RC.items():
+    try:
+        plt.rcParams[_k] = _v
+    except KeyError:
+        pass
 
 
 def _title(fig, run, what):
@@ -64,11 +70,12 @@ def traffic_over_time(run, bin_cycles, path):
         ends = []
         for noc in sorted(df["noc"].unique()):
             d = df[df["noc"] == noc]
-            y = d[col] / bin_cycles
-            ax.plot(d["bin_start"], y, color=NOC_COLORS.get(noc, TEXT2), lw=2,
+            xs = d["bin_start"].to_numpy()
+            y = (d[col] / bin_cycles).to_numpy()
+            ax.plot(xs, y, color=NOC_COLORS.get(noc, TEXT2), lw=2,
                     label=f"NoC{noc}", solid_capstyle="round")
             if len(d):
-                ends.append((d["bin_start"].iloc[-1], float(y.iloc[-1]), f"NoC{noc}"))
+                ends.append((float(xs[-1]), float(y[-1]), f"NoC{noc}"))
         ax.set_ylabel(lab)
         ax.set_ylim(bottom=0)
         _end_labels(ax, ends)
@@ -91,10 +98,12 @@ def source_heatmap(run, bin_cycles, path):
     h = max(2.6, 0.32 * len(piv) + 1.6)
     fig, ax = plt.subplots(figsize=(10, h))
     ax.grid(False)
-    edges = np.append(piv.columns.to_numpy(), piv.columns[-1] + bin_cycles)
+    cols = np.asarray(piv.columns, dtype=float)
+    edges = np.append(cols, cols[-1] + bin_cycles)
     im = ax.pcolormesh(edges, np.arange(len(piv) + 1), piv.to_numpy(), cmap=SEQ,
                        shading="flat", edgecolors=SURFACE, linewidth=0.5)
-    ax.set_yticks(np.arange(len(piv)) + 0.5, piv.index)
+    ax.set_yticks(np.arange(len(piv)) + 0.5)
+    ax.set_yticklabels(list(piv.index))
     ax.invert_yaxis()
     ax.set_xlabel(f"cycle  (bins of {bin_cycles} cycles)")
     cb = fig.colorbar(im, ax=ax, pad=0.01)
@@ -156,6 +165,7 @@ def link_map(run, path):
         ax.set_xlim(-1.3, X - 0.5)
         ax.set_ylim(Y - 0.5, -0.6)
     sm = plt.cm.ScalarMappable(norm=norm, cmap=SEQ)
+    sm.set_array(np.array([]))
     cb = fig.colorbar(sm, ax=axes[0].tolist(), shrink=0.7, pad=0.02)
     cb.set_label("link utilization (flits / cycle over run)")
     cb.outline.set_visible(False)
@@ -173,8 +183,10 @@ def path_matrix(run, path):
     fig, ax = plt.subplots(figsize=(min(2.5 + 0.55 * len(m.columns), 16), min(2 + 0.45 * len(m.index), 14)))
     ax.grid(False)
     im = ax.imshow(m.to_numpy(), cmap=SEQ, aspect="auto")
-    ax.set_xticks(range(len(m.columns)), m.columns, rotation=45, ha="right")
-    ax.set_yticks(range(len(m.index)), m.index)
+    ax.set_xticks(range(len(m.columns)))
+    ax.set_xticklabels(list(m.columns), rotation=45, ha="right")
+    ax.set_yticks(range(len(m.index)))
+    ax.set_yticklabels(list(m.index))
     ax.set_xlabel("destination")
     ax.set_ylabel("source")
     if n <= 12:
@@ -200,7 +212,9 @@ def top_paths(run, path, top=15):
     fig, ax = plt.subplots(figsize=(8, 0.3 * len(g) + 1.4))
     ax.grid(axis="y", visible=False)
     labels = [f"{s} → {d}" for s, d in g.index]
-    ax.barh(labels, g.to_numpy(), color=NOC_COLORS[1], height=0.6)
+    ax.barh(np.arange(len(g)), g.to_numpy(), color=NOC_COLORS[1], height=0.6)
+    ax.set_yticks(np.arange(len(g)))
+    ax.set_yticklabels(labels)
     for i, v in enumerate(g.to_numpy()):
         ax.text(v, i, f" {v:,}", va="center", fontsize=8, color=TEXT2)
     ax.set_xlabel("flits (all NoCs)")
