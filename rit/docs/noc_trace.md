@@ -100,6 +100,7 @@ python3 -m noctrace bs_r5.csv --app Blackscholes --round 5 --window 100000 -o ~/
 python3 -m noctrace r1.csv r2.csv --app hello_world --app hello_world --round 1 --round 2 -o ~/noc_results
 ```
 
+* `--app` and `--round` only label the plots and `signatures.csv`. The output folder is still named after the trace file (or `--name`), so name trace files after app, mesh and round, e.g. `+noc_trace_file=bodytrack_4x4_r5.csv`.
 * `--window N`: window width in cycles (default: same as `--bin`, i.e. run length / 100). Use the **same window for every run you compare**. Window 0 starts at the first traced cycle.
 * `--signature-metric`: what a core's line counts.
   * `injected` (default): packets the core's tile sent into the network

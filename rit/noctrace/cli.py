@@ -41,7 +41,8 @@ def parse_args(argv):
                          "default), packets delivered to it (ejected), or packets through its "
                          "router (router)")
     ap.add_argument("--app", action="append",
-                    help="application name for signature titles (repeat once per file)")
+                    help="application name for signature titles and signatures.csv (repeat once per file); "
+                         "doesn't change the output folder name (use --name for that)")
     ap.add_argument("--round", action="append",
                     help="round/repetition label for signature titles (repeat once per file)")
     ap.add_argument("--no-plots", action="store_true")
@@ -136,8 +137,8 @@ def main(argv=None):
     for i, f in enumerate(a.files):
         app = a.app[i] if a.app and i < len(a.app) else None
         rnd = a.round[i] if a.round and i < len(a.round) else None
-        name = names[i] if i < len(names) else (
-            f"{app}_round{rnd}" if app and rnd is not None else app or _default_name(f, a.files))
+        # output folder follows the trace file (or --name); --app/--round only label
+        name = names[i] if i < len(names) else _default_name(f, a.files)
         s, out = analyze_one(f, name, a, app, rnd)
         print(f"== {name}  ->  {out}")
         print(format_summary(s))
