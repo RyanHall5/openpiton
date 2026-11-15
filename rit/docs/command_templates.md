@@ -10,7 +10,7 @@ All commands assume a lab account set up per [`rhel9_vcs_setup.md`](rhel9_vcs_se
 **Contents**
 - [Every session](#every-session): [load environment](#load-the-environment) · [get latest code](#get-the-latest-code)
 - [Building](#building): [new build](#build-a-new-model) · [check monitor](#check-a-model-includes-the-trace-monitor) · [clean a failed build](#delete-a-failed-or-outdated-build)
-- [Running](#running): [sim with trace](#run-a-simulation-with-tracing) · [sim without trace](#run-a-simulation-without-tracing) · [check a run](#check-a-run-worked-and-wrote-a-trace)
+- [Running](#running): [sim with trace](#run-a-simulation-with-tracing) · [trace part of a run](#trace-only-part-of-a-run) · [benchmark](#run-a-benchmark-on-the-2x1-model) · [sim without trace](#run-a-simulation-without-tracing) · [check a run](#check-a-run-worked-and-wrote-a-trace)
 - [Analyzing](#analyzing): [basic](#analyze-a-trace) · [per-core signatures](#per-core-signatures-for-slides) · [compare runs](#compare-several-runs) · [time range / one NoC](#zoom-into-a-time-range-or-one-noc) · [old sims.log](#analyze-an-old-simslog)
 - [Looking at results](#looking-at-results)
 - [One-time / occasional](#one-time--occasional): [first-time setup](#first-time-setup-of-an-account) · [self-test](#self-test-no-vcs)
@@ -144,6 +144,71 @@ sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_wor
 ```
 
 To also get OpenPiton's built-in router lines in `sims.log`, add `-sim_run_args=+enable_router_mon`. You don't need it when tracing.
+
+### Trace only part of a run
+
+Programs with ROI markers (the benchmarks below) are traced only between their markers automatically. For any program you can also limit the trace by cycle:
+
+```bash
+# template
+sims ... -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=<trace> \
+     [-sim_run_args=+noc_trace_start=<first_cycle>] [-sim_run_args=+noc_trace_stop=<stop_cycle>] [-sim_run_args=+noc_trace_full]
+```
+
+| Placeholder | Meaning |
+|---|---|
+| `<first_cycle>` | log nothing before this cycle |
+| `<stop_cycle>` | log nothing from this cycle on |
+| `+noc_trace_full` | ignore the program's ROI markers (trace everything, within any cycle limits) |
+
+```bash
+# example: cycles 50,000-150,000 of hello_world_many on the 2x1
+cd $PITON_ROOT/build
+sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -vcs_run hello_world_many.c -ariane \
+     -finish_mask 0x11 -rtl_timeout 10000000 \
+     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=hellomany_2x1_win.csv \
+     -sim_run_args=+noc_trace_start=50000 -sim_run_args=+noc_trace_stop=150000
+```
+
+`noctrace` counts cycles from where the window opened; add `--absolute-cycles` to keep run cycles.
+
+### Run a benchmark on the 2x1 model
+
+Bare-metal ports of PARSEC blackscholes and AIBench conv2d, one thread per core, traced only in their region of interest. Background and options: [`../benchmarks/README.md`](../benchmarks/README.md).
+
+```bash
+# template
+cd $PITON_ROOT/build
+sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=<build_id> -vcs_run <benchmark> -ariane \
+     -finish_mask 0x11 -rtl_timeout 10000000 -max_cycle=2000000000 [-gcc_args=-D<NAME>=<value> ...] \
+     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=<trace>
+```
+
+| Placeholder | Meaning |
+|---|---|
+| `<build_id>` | the 2x1 model, e.g. `ariane_2x1` |
+| `<benchmark>` | `parsec_blackscholes.c` or `aibench_conv2d.c` |
+| `-gcc_args=-D<NAME>=<value>` | optional compile-time setting, one `-gcc_args` per define, e.g. `-gcc_args=-DNUM_OPTIONS=16` (blackscholes input size) or `-gcc_args=-DIMG_H=32 -gcc_args=-DIMG_W=32` (conv2d image size) |
+| `<trace>` | trace file, e.g. `blackscholes_2x1_r1.csv` |
+
+```bash
+# example: blackscholes, simsmall input (4096 options), 1 run
+cd $PITON_ROOT/build
+sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -vcs_run parsec_blackscholes.c -ariane \
+     -finish_mask 0x11 -rtl_timeout 10000000 -max_cycle=2000000000 \
+     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=blackscholes_2x1_r1.csv
+cat fake_uart.log        # Num Errors: 0, ROI cycles per hart
+```
+```bash
+# example: conv2d smoke test on a 32x32 image
+cd $PITON_ROOT/build
+sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -vcs_run aibench_conv2d.c -ariane \
+     -finish_mask 0x11 -rtl_timeout 10000000 -max_cycle=2000000000 \
+     -gcc_args=-DIMG_H=32 -gcc_args=-DIMG_W=32 \
+     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=conv32_2x1_smoke.csv
+```
+
+**Success:** `sims.log` has `sims: NoC trace window marker ...`, `noc_trace_mon: window opened ...` / `closed ...` and `PASS (HIT GOOD TRAP)`; `fake_uart.log` ends with `Num Errors: 0`.
 
 ### Run a simulation without tracing
 
@@ -398,4 +463,4 @@ Checks the trace monitor and `noctrace` on a mesh of the real router RTL in Icar
 ~/openpiton/rit/test/run_test.sh 3 2 60
 ```
 
-**Success:** every line `PASS`, ending with `ALL PASS` and `PASS docs`.
+**Success:** every line `PASS`, with `ALL PASS`, `WINDOW ALL PASS` after each window check, and `PASS docs` at the end.

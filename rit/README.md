@@ -15,10 +15,15 @@ rit/
 │   ├── noc_trace.md           NoC tracing user guide: workflow, recipes, troubleshooting
 │   └── noctrace_reference.md  every plusarg, option, output file and column
 ├── noctrace/                  Python package: parse + analyze flit traces
+├── benchmarks/                bare-metal benchmark ports for the 2x1 model: README, generator, QEMU check
 └── test/                      self-test (Icarus, no VCS) + docs coverage check
 
 piton/verif/env/manycore/noc_trace_mon.v.pyv   per-flit trace monitor (+noc_trace)
   (hooked up in manycore_top.v.pyv and manycore.flist / manycore.flist.jtag)
+piton/tools/bin/rv64_img, piton/tools/src/sims/sims,2.0
+  (pass a program's ROI marker addresses to the monitor: trace window)
+piton/verif/diag/c/riscv/ariane/rit/            benchmark programs (parsec_blackscholes.c, aibench_conv2d.c)
+piton/verif/diag/assembly/include/riscv/ariane/rit/   their headers (bench.h, math.h, bs_option_data.h)
 ```
 
 ## Documentation
@@ -29,6 +34,7 @@ piton/verif/env/manycore/noc_trace_mon.v.pyv   per-flit trace monitor (+noc_trac
 | set up a lab account, build and run OpenPiton | [`docs/rhel9_vcs_setup.md`](docs/rhel9_vcs_setup.md) |
 | record NoC traffic and analyze it | [`docs/noc_trace.md`](docs/noc_trace.md) (user guide) |
 | look up a run switch, `noctrace` option, output file or column | [`docs/noctrace_reference.md`](docs/noctrace_reference.md) |
+| run PARSEC blackscholes / AIBench conv2d on the 2x1 model | [`benchmarks/README.md`](benchmarks/README.md) |
 | see all `noctrace` options from the terminal | `python3 -m noctrace --help` |
 
 ## New to this repo
