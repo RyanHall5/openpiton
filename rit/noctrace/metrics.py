@@ -173,7 +173,8 @@ def summary(run):
         "packets": int(len(p)),
         "injected_flits": int(p["flits"].sum()),
         "mesh_flit_hops": int((ev["link_kind"] == "mesh").sum()),
-        "injection_rate_flits_per_cycle": round(p["flits"].sum() / max(span, 1), 5),
+        "traced_cycles": run.traced_cycles(),
+        "injection_rate_flits_per_cycle": round(p["flits"].sum() / max(run.traced_cycles(), 1), 5),
         "per_noc": {},
         "warnings": list(run.meta.get("warnings", [])),
     }

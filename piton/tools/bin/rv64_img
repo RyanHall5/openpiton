@@ -36,6 +36,8 @@ xxd -g 8 -c 32 diag.o | awk '{printf("%s %s %s %s\n", $2, $3, $4, $5);}' >> mem.
 #create symbol.tbl
 ${RV64_TARGET_TRIPLE}-objdump -d diag.exe | grep "<pass>:" | awk '{printf("good_trap %s X %s\n", $1, $1);}' >symbol.tbl
 ${RV64_TARGET_TRIPLE}-objdump -d diag.exe | grep "<fail>:" | awk '{printf("bad_trap %s X %s\n", $1, $1);}' >>symbol.tbl
+# RIT: NoC trace window markers (rit/bench.h in the Ariane include dir); sims passes them to noc_trace_mon
+${RV64_TARGET_TRIPLE}-nm diag.exe | awk '$3=="noc_roi_begin_mark"{printf("noc_roi_begin %s X %s\n", $1, $1);} $3=="noc_roi_end_mark"{printf("noc_roi_end %s X %s\n", $1, $1);}' >>symbol.tbl
 ${RV64_TARGET_TRIPLE}-objdump -d diag.exe --disassemble-all --disassemble-zeroes --section=.text --section=.text.startup --section=.text.init --section=.data  > diag.dump
 
 #create empty diag.ev

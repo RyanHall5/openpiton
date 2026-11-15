@@ -17,7 +17,13 @@ ap.add_argument("--npkt", type=int, default=60, help="packets per source per NoC
 ap.add_argument("--period", type=int, default=2500, help="clock period in ps")
 ap.add_argument("--cycles", type=int, default=30000)
 ap.add_argument("--out", default="build")
+ap.add_argument("--roi-events", default="",
+                help="add stand-in Ariane cores that commit marker PCs, for the trace-window "
+                     "test: comma-separated KIND:CYCLE:CORE with KIND b (begin) or e (end)")
+ap.add_argument("--begin-pc", default="80001000")
+ap.add_argument("--end-pc", default="80002000")
 a = ap.parse_args()
+ROI = [(k, int(c), int(t)) for k, c, t in (e.split(":") for e in a.roi_events.split(",") if e)]
 X, Y = a.x, a.y
 NT = X * Y
 os.makedirs(os.path.join(a.out, "inc"), exist_ok=True)
@@ -40,6 +46,8 @@ with open(os.path.join(a.out, "inc", "iop.h"), "w") as f:
 with open(os.path.join(a.out, "inc", "cross_module.tmp.h"), "w") as f:
     for t in range(NT):
         f.write("`define TILE%d tb.tile%d\n`define RTL_TILE%d\n" % (t, t, t))
+        if ROI:
+            f.write("`define RTL_ARIANE%d\n`define ARIANE_CORE%d tb.core%d\n" % (t, t, t))
 
 # ---------------------------------------------------------------- modules
 lib = r"""
@@ -120,6 +128,21 @@ module traffic_sink #(parameter DST_ID=0, NOC=1)
 endmodule
 """
 
+# Stand-in for an Ariane core's commit-PC debug port (piton_pc_vld/piton_pc),
+# used by the trace-window test. Commits a junk PC every cycle, except on the
+# cycles listed for it, where it commits the ROI begin or end marker address.
+fake_core = r"""
+module fake_ariane_core #(parameter ID=0) (input clk);
+  reg piton_pc_vld = 0; reg [63:0] piton_pc = 0; reg [63:0] cyc = 0;
+  always @(posedge clk) begin
+    piton_pc_vld <= 1'b1;
+    piton_pc <= 64'h80000000 + {cyc[29:0], 2'b00} + 64'h4000;  // never a marker
+%s
+    cyc <= cyc + 1;
+  end
+endmodule
+"""
+
 # test_tile: 3 routers named like OpenPiton's tile (user_dynamic_networkN)
 tp = ["input clk", "input rst", "input [7:0] myx", "input [7:0] myy"]
 for n in range(3):
@@ -196,6 +219,9 @@ for t in range(NT):
             tb.append('    if (t%d_vout_%s%d) $display("%%d: TILE%d noc%d router out %s data: 0x%%x ", $time, t%d_dout_%s%d);'
                       % (t, d, n, t, n + 1, d, t, d, n))
 tb.append("  end")
+if ROI:
+    for t in range(NT):
+        tb.append("  fake_ariane_core #(.ID(%d)) core%d (.clk(clk));" % (t, t))
 tb.append("""  noc_trace_mon mon (.clk(clk));
   initial begin
     gt_fd = $fopen("gt.csv", "w");
@@ -209,6 +235,12 @@ tb.append("""  noc_trace_mon mon (.clk(clk));
   end
 endmodule""" % (X, Y, a.cycles))
 
+if ROI:
+    ev = []
+    for k, c, t in ROI:
+        pc = a.begin_pc if k == "b" else a.end_pc
+        ev.append("    if (ID == %d && cyc == %d) piton_pc <= 64'h%s;" % (t, c, pc))
+    lib += fake_core % "\n".join(ev)
 with open(os.path.join(a.out, "tb_mesh.v"), "w") as f:
     f.write(lib + "\n" + "\n".join(tile) + "\n" + "\n".join(tb) + "\n")
 print("wrote", os.path.join(a.out, "tb_mesh.v"))

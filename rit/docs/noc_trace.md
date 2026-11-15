@@ -70,6 +70,15 @@ grep -E "noc_trace_mon|PASS|FAIL" sims.log   # "noc_trace_mon: writing flit trac
 head -6 hello_2x2_r1.csv                      # 4 "#" lines, the column header, then data rows
 ```
 
+### Tracing only part of a run
+
+Benchmarks spend a long time setting up before the part you care about. To keep traces small, the monitor can trace only a window of the run:
+
+- **Programs with ROI markers** (the benchmarks in `piton/verif/diag/c/riscv/ariane/rit/`, or anything that calls `noc_roi_begin()` / `noc_roi_end()` from `rit/bench.h`): nothing to add. `sims` finds the markers and the trace covers only the region of interest. The run's output shows `sims: NoC trace window marker ...` and `noc_trace_mon: window opened at cycle N` / `closed at cycle N`. Add `-sim_run_args=+noc_trace_full` to trace the whole run anyway.
+- **Any program, by cycle:** `-sim_run_args=+noc_trace_start=<cycle>` and/or `-sim_run_args=+noc_trace_stop=<cycle>`.
+
+`noctrace` then counts cycles from where the window opened (cycle 0 = ROI start), so signatures from different runs line up at the ROI. `summary.txt` shows the window and the offset; `--absolute-cycles` keeps run cycles instead. A few packets crossing the network exactly when the window opens or closes are traced on only part of their route, and show up as "never seen leaving" warnings; that's expected. Details: [reference, §1 Trace window](noctrace_reference.md#trace-window).
+
 ## Step 5: Analyze
 
 ```bash
@@ -201,7 +210,7 @@ Small summaries (`summary.json`, a few plots) are fine to commit when they back 
 
 ## Self-test
 
-`rit/test/run_test.sh [X] [Y] [packets]` checks the whole flow without VCS. It builds an X×Y mesh of OpenPiton's real router RTL in Icarus Verilog, drives random traffic, runs the generated monitor unchanged, and compares `noctrace`'s results with what the testbench actually sent. It also checks that the docs cover every option and output column.
+`rit/test/run_test.sh [X] [Y] [packets]` checks the whole flow without VCS. It builds an X×Y mesh of OpenPiton's real router RTL in Icarus Verilog, drives random traffic, runs the generated monitor unchanged, and compares `noctrace`'s results with what the testbench actually sent. It then reruns with trace windows (cycle limits, and ROI marker PCs from stand-in Ariane cores) and checks that every packet inside a window is traced completely and nothing outside is. It also checks that the docs cover every option and output column.
 
 ```bash
 rit/test/run_test.sh 3 2 60      # needs iverilog
@@ -210,6 +219,7 @@ rit/test/run_test.sh 3 2 60      # needs iverilog
 ## Limits
 
 - 2D-mesh builds only (not `xbar_config`).
+- ROI markers (begin/end PCs) need Ariane builds; cycle limits work with any core.
 - Builds with fewer tiles than x_tiles × y_tiles: edges next to a missing tile aren't traced.
 - A tile whose clock is gated off isn't sampled correctly (the monitor uses the ungated chip clock).
 - Speed: about 8 s per 300k flit events end to end. Use `--start/--end` or `--noc` on very long runs.

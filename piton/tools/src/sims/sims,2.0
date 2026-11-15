@@ -1653,6 +1653,18 @@ sub generic_sim_run
           $bad_trap_list{$pa} = $pa;
         }
       }
+
+      # RIT: NoC trace window. If the program has the ROI marker labels
+      # (rit/bench.h in the Ariane include dir), tell noc_trace_mon their addresses.
+      # Only used by runs with +noc_trace; +noc_trace_full ignores them.
+      foreach my $mark ("noc_roi_begin", "noc_roi_end") {
+        my @mark_list = `grep -w $mark symbol.tbl`;
+        if ($#mark_list >= 0) {
+          my ($tmp1, $va, $ra, $pa) = ($mark_list[0] =~ /([\w_\.]+)\s+(\w+)\s+(\w+)\s+(\w+)/) ;
+          push (@{$opt{sim_run_args}}, "+${mark}_pc=$pa") ;
+          print "$prg: NoC trace window marker $mark at $pa\n" ;
+        }
+      }
     }
 
     # add in switches for signal dumping

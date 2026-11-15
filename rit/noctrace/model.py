@@ -370,10 +370,20 @@ class Run:
         g["from_y"] = [m.xy(v)[1] for v in f]
         g["to_x"] = [m.xy(v)[0] for v in t]
         g["to_y"] = [m.xy(v)[1] for v in t]
-        span = self.cycle_span()
-        g["utilization"] = g["flits"] / max(span, 1)
+        g["utilization"] = g["flits"] / max(self.traced_cycles(), 1)
         return g.drop(columns="link")
 
     def cycle_span(self):
         c = self.events["cycle"]
         return int(c.max() - c.min() + 1) if len(c) else 0
+
+    def traced_cycles(self):
+        """Cycles the trace covers: the whole span, or for a trace recorded with
+        a window, the cycles the window was open (gaps between windows excluded)."""
+        span = self.cycle_span()
+        wins = self.meta.get("windows") or []
+        if not wins or not span:
+            return span
+        last = int(self.events["cycle"].max())
+        n = sum((last + 1 if e is None else e) - b for b, e in wins)
+        return int(min(max(n, 1), span))

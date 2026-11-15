@@ -90,6 +90,10 @@ def parse_args(argv):
                    help="drop flits before this cycle")
     g.add_argument("--end", type=int, metavar="CYCLE",
                    help="drop flits after this cycle")
+    g.add_argument("--absolute-cycles", action="store_true",
+                   help="for a trace recorded with a window (ROI markers or +noc_trace_start): "
+                        "keep cycles counted from time 0. By default cycle 0 is where the "
+                        "first window opened, and --start/--end use that same count")
 
     g = ap.add_argument_group("input format (usually automatic)")
     g.add_argument("--format", default="auto", choices=["auto", "noc_trace", "router_mon"],
@@ -107,10 +111,14 @@ def parse_args(argv):
 
 
 def analyze_one(path, name, a, app=None, rnd=None):
-    from .adapters import load_events
+    from .adapters import load_events, align_to_window
     from .model import Run
     ev, meta = load_events(path, a.format, x_tiles=a.x_tiles, y_tiles=a.y_tiles,
                            clock_period=a.clock_period, chip_id=a.chip_id)
+    if a.absolute_cycles:
+        meta["cycle_offset"] = 0
+    else:
+        ev = align_to_window(ev, meta)
     if a.noc:
         ev = ev[ev["noc"].isin([int(n) for n in a.noc.split(",")])]
     if a.start is not None:
@@ -151,6 +159,8 @@ def analyze_one(path, name, a, app=None, rnd=None):
         e.to_csv(os.path.join(out, "events.csv.gz"), index=False)
     s = metrics.summary(run)
     s["bin_cycles"] = b
+    s["cycle_offset"] = meta.get("cycle_offset", 0)
+    s["windows"] = meta.get("windows", [])
     with open(os.path.join(out, "summary.json"), "w") as f:
         json.dump(s, f, indent=2)
     with open(os.path.join(out, "summary.txt"), "w") as f:
@@ -175,6 +185,10 @@ def format_summary(s):
          f"packets:  {s['packets']:,}   injected flits {s['injected_flits']:,}   "
          f"router-to-router flit-hops {s['mesh_flit_hops']:,}",
          f"load:     {s['injection_rate_flits_per_cycle']} injected flits/cycle (whole chip)"]
+    if s.get("windows"):
+        w = ", ".join(f"{b}..{'end' if e is None else e}" for b, e in s["windows"])
+        L.insert(2, f"window:   traced only in cycles {w} ({s['traced_cycles']} cycles; cycle 0 = cycle "
+                    f"{s['cycle_offset']} of the run, --absolute-cycles to keep run cycles)")
     for noc, d in s["per_noc"].items():
         lat = (f"latency mean {d['latency_mean']}  p95 {d['latency_p95']}  max {d['latency_max']}"
                if d["latency_mean"] is not None else "latency n/a")

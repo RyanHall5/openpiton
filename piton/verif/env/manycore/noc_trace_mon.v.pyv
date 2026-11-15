@@ -20,6 +20,25 @@
 // and optionally pick the output file (default noc_trace.csv in the run dir):
 //     -sim_run_args=+noc_trace_file=my_run.csv
 //
+// Trace window (all optional; one plusarg per -sim_run_args=):
+//     +noc_trace_start=N      log nothing before cycle N
+//     +noc_trace_stop=N       log nothing from cycle N on
+//     +noc_roi_begin_pc=HEX   open the window when any Ariane core commits
+//                             the instruction at this address
+//     +noc_roi_end_pc=HEX     close it when any core commits this address
+//     +noc_trace_full         ignore the two PC triggers
+// sims passes the two PC plusargs automatically when the test program
+// contains the noc_roi_begin_mark / noc_roi_end_mark labels (see
+// piton/verif/diag/assembly/include/riscv/ariane/rit/bench.h). The window can open and close several
+// times; each change writes a "# window_begin cycle=N" / "# window_end
+// cycle=N" comment line into the trace.
+//
+// Whole packets only: every channel keeps a count of the body flits still to
+// come, from time 0, whether or not the window is open. The window is only
+// checked when a header flit crosses the channel, so each channel logs a packet
+// completely or not at all. Packets already on a channel when the window opens,
+// or still on it when the window closes, are finished or skipped as a unit.
+//
 // Works with MINIMAL_MONITORING builds. Mesh builds only (skipped for xbar).
 // Only standard Verilog-2001 system tasks are used, so it should run on VCS,
 // Icarus and Verilator alike.
@@ -39,6 +58,32 @@
     print("`define NOC_TRACE_NUM_TILES %d" % PITON_NUM_TILES)
     if (PITON_NETWORK_CONFIG == "xbar_config"):
         print("`define NOC_TRACE_XBAR")
+
+    # One entry per logged channel: (tile, noc, x, y, dir, port, valid, data)
+    CHANNELS = []
+    for y in range(PITON_Y_TILES):
+        for x in range(PITON_X_TILES):
+            flatid = x + y * PITON_X_TILES
+            if flatid >= PITON_NUM_TILES:
+                continue
+            for nocid in [1, 2, 3]:
+                r = "`TILE%d.user_dynamic_network%d" % (flatid, nocid - 1)
+                # every input port: hops, injections, and chipset->chip at the edge
+                for p in ['N', 'E', 'S', 'W', 'P']:
+                    CHANNELS.append((flatid, nocid, x, y, 'in', p,
+                                     "%s.validIn_%s" % (r, p), "%s.dataIn_%s" % (r, p)))
+                # ejection to the tile
+                CHANNELS.append((flatid, nocid, x, y, 'out', 'P',
+                                 "%s.validOut_P" % r, "%s.dataOut_P" % r))
+                # outputs that leave the mesh (no receiving router to log them)
+                edge = []
+                if y == 0: edge.append('N')
+                if y == PITON_Y_TILES - 1: edge.append('S')
+                if x == 0: edge.append('W')
+                if x == PITON_X_TILES - 1: edge.append('E')
+                for p in edge:
+                    CHANNELS.append((flatid, nocid, x, y, 'out', p,
+                                     "%s.validOut_%s" % (r, p), "%s.dataOut_%s" % (r, p)))
 %>
 
 module noc_trace_mon (
@@ -52,13 +97,64 @@ reg             trace_on;
 reg [63:0]      cycle;
 reg [8*256-1:0] trace_file;
 
+// trace window
+reg [63:0]      start_cycle;
+reg [63:0]      stop_cycle;
+reg             stop_set;
+reg [39:0]      roi_begin_pc;
+reg [39:0]      roi_end_pc;
+reg             use_roi;        // a begin PC was given and +noc_trace_full wasn't
+reg             end_pc_set;
+reg             roi_on;         // between a begin-PC hit and an end-PC hit
+reg             roi_begin_hit;
+reg             roi_end_hit;
+reg             win;            // window open this cycle
+reg             win_now;
+reg             any_window_opt;
+
+<%
+    for k in range(len(CHANNELS)):
+        print("reg [7:0] rem%d;   // body flits still to come on channel %d" % (k, k))
+        print("reg       open%d;  // channel %d is logging the current packet" % (k, k))
+%>
+
 initial begin
-    trace_on = 1'b0;
-    fd       = 0;
-    cycle    = 64'd0;
+    trace_on     = 1'b0;
+    fd           = 0;
+    cycle        = 64'd0;
+    start_cycle  = 64'd0;
+    stop_cycle   = 64'd0;
+    stop_set     = 1'b0;
+    roi_begin_pc = 40'd0;
+    roi_end_pc   = 40'd0;
+    use_roi      = 1'b0;
+    end_pc_set   = 1'b0;
+    roi_on       = 1'b0;
+    win          = 1'b0;
+    any_window_opt = 1'b0;
+<%
+    for k in range(len(CHANNELS)):
+        print("    rem%d = 8'd0; open%d = 1'b0;" % (k, k))
+%>
     if ($test$plusargs("noc_trace")) begin
         if (!$value$plusargs("noc_trace_file=%s", trace_file))
             trace_file = "noc_trace.csv";
+        if ($value$plusargs("noc_trace_start=%d", start_cycle))
+            any_window_opt = 1'b1;
+        if ($value$plusargs("noc_trace_stop=%d", stop_cycle)) begin
+            stop_set = 1'b1;
+            any_window_opt = 1'b1;
+        end
+        if ($value$plusargs("noc_roi_begin_pc=%h", roi_begin_pc))
+            use_roi = 1'b1;
+        if ($value$plusargs("noc_roi_end_pc=%h", roi_end_pc))
+            end_pc_set = 1'b1;
+        if ($test$plusargs("noc_trace_full")) begin
+            use_roi    = 1'b0;
+            end_pc_set = 1'b0;
+        end
+        if (use_roi)
+            any_window_opt = 1'b1;
         fd = $fopen(trace_file, "w");
         if (fd == 0) begin
             $display("noc_trace_mon: ERROR could not open %0s, tracing disabled", trace_file);
@@ -70,8 +166,21 @@ initial begin
             $fdisplay(fd, "# x_tiles=%0d y_tiles=%0d num_tiles=%0d",
                       `NOC_TRACE_X_TILES, `NOC_TRACE_Y_TILES, `NOC_TRACE_NUM_TILES);
             $fdisplay(fd, "# cycle counts rising edges of the chip clock from time 0; time is $time in sim units");
+            // flags say which limits are in use (a value with its flag at 0 is unused)
+            if (any_window_opt)
+                $fdisplay(fd, "# window_config start_cycle=%0d stop_set=%0d stop_cycle=%0d use_roi=%0d roi_begin_pc=0x%0h end_pc_set=%0d roi_end_pc=0x%0h",
+                          start_cycle, stop_set, stop_cycle, use_roi, roi_begin_pc, end_pc_set, roi_end_pc);
             $fdisplay(fd, "cycle,time,noc,x,y,dir,port,flit");
             $display("noc_trace_mon: writing flit trace to %0s", trace_file);
+            if (use_roi && end_pc_set)
+                $display("noc_trace_mon: window opens at ROI begin pc %0h, closes at ROI end pc %0h",
+                         roi_begin_pc, roi_end_pc);
+            else if (use_roi)
+                $display("noc_trace_mon: window opens at ROI begin pc %0h, stays open to the end",
+                         roi_begin_pc);
+            if (start_cycle != 0 || stop_set)
+                $display("noc_trace_mon: cycle limits start=%0d stop=%0d (stop used: %0d)",
+                         start_cycle, stop_cycle, stop_set);
         end
     end
 end
@@ -81,36 +190,50 @@ always @(posedge clk)
 
 always @(negedge clk) begin
     if (trace_on) begin
+        // ---- ROI triggers: an Ariane core committing a marker address ----
+        roi_begin_hit = 1'b0;
+        roi_end_hit   = 1'b0;
 <%
-    ports = ['N', 'E', 'S', 'W', 'P']
-    for y in range(PITON_Y_TILES):
-        for x in range(PITON_X_TILES):
-            flatid = x + y * PITON_X_TILES
-            if flatid >= PITON_NUM_TILES:
-                continue
-            print("`ifdef RTL_TILE%d" % flatid)
-            for nocid in [1, 2, 3]:
-                r = "`TILE%d.user_dynamic_network%d" % (flatid, nocid - 1)
-                # every input port: hops, injections, and chipset->chip at the edge
-                for p in ports:
-                    print("        if (%s.validIn_%s)" % (r, p))
-                    print('            $fdisplay(fd, "%%0d,%%0d,%d,%d,%d,in,%s,%%016h", cycle, $time, %s.dataIn_%s);'
-                          % (nocid, x, y, p, r, p))
-                # ejection to the tile
-                print("        if (%s.validOut_P)" % r)
-                print('            $fdisplay(fd, "%%0d,%%0d,%d,%d,%d,out,P,%%016h", cycle, $time, %s.dataOut_P);'
-                      % (nocid, x, y, r))
-                # outputs that leave the mesh (no receiving router to log them)
-                edge = []
-                if y == 0: edge.append('N')
-                if y == PITON_Y_TILES - 1: edge.append('S')
-                if x == 0: edge.append('W')
-                if x == PITON_X_TILES - 1: edge.append('E')
-                for p in edge:
-                    print("        if (%s.validOut_%s)" % (r, p))
-                    print('            $fdisplay(fd, "%%0d,%%0d,%d,%d,%d,out,%s,%%016h", cycle, $time, %s.dataOut_%s);'
-                          % (nocid, x, y, p, r, p))
-            print("`endif")
+    for t in range(PITON_NUM_TILES):
+        print("`ifdef RTL_ARIANE%d" % t)
+        print("        if (`ARIANE_CORE%d.piton_pc_vld) begin" % t)
+        print("            if (use_roi && (`ARIANE_CORE%d.piton_pc[39:0] == roi_begin_pc)) roi_begin_hit = 1'b1;" % t)
+        print("            if (end_pc_set && (`ARIANE_CORE%d.piton_pc[39:0] == roi_end_pc)) roi_end_hit = 1'b1;" % t)
+        print("        end")
+        print("`endif")
+%>
+        if (!roi_on && roi_begin_hit)
+            roi_on = 1'b1;
+        else if (roi_on && roi_end_hit)
+            roi_on = 1'b0;
+
+        // ---- is the window open this cycle? ----
+        win_now = (cycle >= start_cycle) && (!stop_set || cycle < stop_cycle) && (!use_roi || roi_on);
+        // (a run with no window options is one window from cycle 0: nothing to note)
+        if ((win_now != win) && any_window_opt) begin
+            if (win_now)
+                $fdisplay(fd, "# window_begin cycle=%0d time=%0d", cycle, $time);
+            else
+                $fdisplay(fd, "# window_end cycle=%0d time=%0d", cycle, $time);
+            $display("noc_trace_mon: window %0s at cycle %0d", win_now ? "opened" : "closed", cycle);
+        end
+        win = win_now;
+
+        // ---- flits: decide per packet (at its header) whether to log it ----
+<%
+    for k, (t, nocid, x, y, d, p, valid, data) in enumerate(CHANNELS):
+        if k == 0 or CHANNELS[k-1][0] != t:
+            if k != 0:
+                print("`endif")
+            print("`ifdef RTL_TILE%d" % t)
+        print("        if (%s) begin" % valid)
+        print("            if (rem%d == 8'd0) open%d = win;" % (k, k))
+        print('            if (open%d) $fdisplay(fd, "%%0d,%%0d,%d,%d,%d,%s,%s,%%016h", cycle, $time, %s);'
+              % (k, nocid, x, y, d, p, data))
+        print("            rem%d = (rem%d == 8'd0) ? %s[29:22] : rem%d - 8'd1;" % (k, k, data, k))
+        print("        end")
+    if CHANNELS:
+        print("`endif")
 %>
     end
 end

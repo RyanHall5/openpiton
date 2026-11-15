@@ -3,7 +3,7 @@
 The complete list of every switch, option, file and column. For a walkthrough, start with the user guide, [`noc_trace.md`](noc_trace.md).
 
 **Contents**
-1. [Trace monitor (`noc_trace_mon`)](#1-trace-monitor-noc_trace_mon): run-time switches, build integration
+1. [Trace monitor (`noc_trace_mon`)](#1-trace-monitor-noc_trace_mon): run-time switches, trace window, build integration
 2. [Trace file format](#2-trace-file-format)
 3. [`noctrace` command line](#3-noctrace-command-line): every option
 4. [Output files](#4-output-files): every file and column
@@ -25,6 +25,11 @@ Passed through `sims` with `-sim_run_args=`, **one plusarg per `-sim_run_args`**
 |---|---|---|
 | `+noc_trace` | off | Turn the trace on. Without it the monitor does nothing and writes no file. |
 | `+noc_trace_file=NAME` | `noc_trace.csv` | Output file name. Relative names land in the directory `sims` was run from (normally `$PITON_ROOT/build/`). An existing file with the same name is **overwritten**. |
+| `+noc_trace_start=NAME` | 0 | Trace window: log nothing before this cycle (NAME is a cycle number). |
+| `+noc_trace_stop=NAME` | none | Trace window: log nothing from this cycle on. |
+| `+noc_roi_begin_pc=NAME` | none | Trace window: open the window when any Ariane core commits the instruction at this address (hex). **`sims` passes it automatically** when the test program contains the `noc_roi_begin_mark` label (programs that call `noc_roi_begin()` from `rit/bench.h`). |
+| `+noc_roi_end_pc=NAME` | none | Trace window: close the window when any core commits this address. Passed automatically for `noc_roi_end_mark`. Without it, a window opened by the begin PC stays open to the end of the run. |
+| `+noc_trace_full` | off | Ignore `+noc_roi_begin_pc` / `+noc_roi_end_pc` (so ignore a program's ROI markers) and trace the whole run. `+noc_trace_start` / `+noc_trace_stop` still apply. |
 | `+enable_router_mon` | off | Not part of this monitor. Turns on OpenPiton's built-in router monitor, which prints router-to-router flits into `sims.log`. Only useful for the `router_mon` input format (§3). |
 
 ```bash
@@ -33,6 +38,31 @@ sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_wor
 ```
 
 When tracing starts, the run's output (and `sims.log`) shows `noc_trace_mon: writing flit trace to <NAME>`. If the file can't be opened, it shows `noc_trace_mon: ERROR could not open <NAME>, tracing disabled` and the simulation continues without a trace.
+
+### Trace window
+
+By default the whole run is traced. A window limits the trace to part of the run, typically a benchmark's region of interest (ROI), so a long run doesn't write gigabytes of start-up traffic.
+
+The window is open on a cycle when all of these hold:
+- the cycle is at or after `+noc_trace_start` (default 0)
+- the cycle is before `+noc_trace_stop` (if given)
+- if a begin PC is in use: a core has committed the begin address and, since then, no core has committed the end address
+
+The begin/end PCs can open and close the window several times (for example once per repetition of a benchmark). A begin hit while open, or an end hit while closed, is ignored. The PCs come from Ariane's commit-PC debug port (`piton_pc`, the same signal `pc_cmp` uses to detect the good trap), so they only work in Ariane builds.
+
+**How `sims` finds the markers.** `rv64_img` (run by `sims` after compiling the test) adds `noc_roi_begin` / `noc_roi_end` lines to `symbol.tbl` for the program's `noc_roi_begin_mark` / `noc_roi_end_mark` labels; `sims` then adds `+noc_roi_begin_pc=` / `+noc_roi_end_pc=` to the run and prints `sims: NoC trace window marker noc_roi_begin at <address>`. Programs without the labels are traced as before. `rit/bench.h` defines `noc_roi_begin()` / `noc_roi_end()`: each spins 16 times on its label, so the commit can't be missed. See [`rit/benchmarks/README.md`](../benchmarks/README.md).
+
+**Whole packets only.** Each channel keeps count of the body flits still to come (from each header's length field) for the whole run, window or not, and checks the window only when a header crosses it. So each channel logs every packet completely or not at all: a packet already crossing a channel when the window opens is skipped there, and one still crossing when it closes is finished. A packet that is crossing the network at the moment the window opens or closes is therefore traced on only part of its route. Expect a handful per window edge; `noctrace` reports them as warnings (§4).
+
+**In the trace file** (§2): a `# window_config ...` line in the header records the options in use, and each time the window opens or closes the monitor writes a `# window_begin cycle=N time=T` or `# window_end cycle=N time=T` comment line at that point in the file, and prints `noc_trace_mon: window opened at cycle N` to the run's output. Runs with no window option don't get these lines.
+
+```bash
+# trace only cycles 2,000,000-3,000,000 of a run
+sims ... -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=x.csv \
+     -sim_run_args=+noc_trace_start=2000000 -sim_run_args=+noc_trace_stop=3000000
+# a program with ROI markers, but trace everything
+sims ... -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=x.csv -sim_run_args=+noc_trace_full
+```
 
 ### Build integration
 
@@ -43,6 +73,7 @@ There's no build option for the monitor. Every model built from this branch incl
 | `piton/verif/env/manycore/noc_trace_mon.v.pyv` | the monitor (a PyHP template) |
 | `piton/verif/env/manycore/manycore.flist`, `manycore.flist.jtag` | lists `noc_trace_mon.v` so it gets compiled |
 | `piton/verif/env/manycore/manycore_top.v.pyv` | instantiates it: `noc_trace_mon noc_trace_mon (`CHIP_INT_CLK);` |
+| `piton/tools/bin/rv64_img`, `piton/tools/src/sims/sims,2.0` | pass the ROI marker addresses to the run (trace window). Scripts: no rebuild needed after changes |
 
 - During `-vcs_build`, `sims` runs PyHP on the template with the build's `-x_tiles`/`-y_tiles`, generating code for exactly that mesh. The generated Verilog is written next to the template as `piton/verif/env/manycore/noc_trace_mon.tmp.v` (git-ignored, overwritten by each build), and the build's file list in `build/manycore/<build_id>/` points to it.
 - To check whether a model includes the monitor: `grep -rlq noc_trace_mon $PITON_ROOT/build/manycore/<build_id>/ && echo yes || echo "no: rebuild"`.
@@ -62,7 +93,7 @@ Every falling edge of the chip clock (`CHIP_INT_CLK`), for every tile and each o
 | `out` on P | the router delivering a flit to its tile |
 | `out` on N, E, S, W **at the mesh edge only** | a flit leaving the chip (normally tile 0, W → chipset) |
 
-Each physical channel is logged exactly once. OpenPiton's NoC uses credit-based (`valid`/`yummy`) flow control, so `valid` high on a clock edge means exactly one flit was transferred.
+Each physical channel is logged exactly once. OpenPiton's NoC uses credit-based (`valid`/`yummy`) flow control, so `valid` high on a clock edge means exactly one flit was transferred. With a trace window, a flit is logged only if its packet's header crossed that channel while the window was open (see Trace window).
 
 ---
 
@@ -78,6 +109,16 @@ cycle,time,noc,x,y,dir,port,flit
 ```
 
 Lines starting with `#` are metadata. `noctrace` reads `x_tiles` and `y_tiles` from them.
+
+A run with a trace window (§1) adds a header line recording its options, and a comment line wherever the window opens or closes. A value whose flag is 0 isn't in use:
+```
+# window_config start_cycle=0 stop_set=0 stop_cycle=0 use_roi=1 roi_begin_pc=0x800001ce end_pc_set=1 roi_end_pc=0x800001de
+cycle,time,noc,x,y,dir,port,flit
+# window_begin cycle=81234 time=81234000
+81234,81234000,1,0,0,in,P,...
+...
+# window_end cycle=2391877 time=2391877000
+```
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -154,6 +195,7 @@ Run with the env script sourced (`source ~/openpiton/rit/setup/openpiton_env.sh`
 | `--noc` | LIST | all | Only these NoCs, comma-separated: `2`, `1,3`. Everything (tables, plots, summary) then covers only those NoCs. |
 | `--start` | CYCLE | none | Drop flits before this cycle. |
 | `--end` | CYCLE | none | Drop flits after this cycle. |
+| `--absolute-cycles` | — | off | For a trace with a window (§1): keep cycles counted from time 0. By default, cycle 0 is moved to where the first window opened (the ROI start), so per-core signatures and bins start at the ROI. `--start`/`--end` use the same count as the output. |
 
 Filtering happens before packets are rebuilt, so a packet cut by `--start`/`--end` shows up as a warning (truncated, or "never seen leaving").
 
@@ -187,8 +229,8 @@ Everything for one trace is in `DIR/<name>/`. All CSVs have a header row. Cycles
 
 | File | Contents |
 |---|---|
-| `summary.txt` | Human-readable: file, format, mesh, cycle range, bin size, packet/flit totals, injection rate, per-NoC packets/flits/average hops/latency (mean, p95, max), busiest router-to-router link, warnings. |
-| `summary.json` | The same, machine-readable. Keys: `file`, `format`, `mesh`, `first_cycle`, `last_cycle`, `cycles`, `packets`, `injected_flits`, `mesh_flit_hops`, `injection_rate_flits_per_cycle`, `per_noc` (per NoC: `packets`, `flits`, `avg_mesh_hops`, `latency_mean`, `latency_p95`, `latency_max`), `busiest_mesh_link` (`noc`, `from`, `to`, `flits`, `utilization`), `warnings`, `bin_cycles`, `signature_window_cycles`, `signature_metric`, `signature_unit`, and `clock_period` for sims.log. |
+| `summary.txt` | Human-readable: file, format, mesh, cycle range, bin size, trace window(s) if any, packet/flit totals, injection rate, per-NoC packets/flits/average hops/latency (mean, p95, max), busiest router-to-router link, warnings. |
+| `summary.json` | The same, machine-readable. Keys: `file`, `format`, `mesh`, `first_cycle`, `last_cycle`, `cycles`, `traced_cycles` (= `cycles`, or for a windowed trace the cycles the window was open; rates and utilizations divide by this), `packets`, `injected_flits`, `mesh_flit_hops`, `injection_rate_flits_per_cycle`, `per_noc` (per NoC: `packets`, `flits`, `avg_mesh_hops`, `latency_mean`, `latency_p95`, `latency_max`), `busiest_mesh_link` (`noc`, `from`, `to`, `flits`, `utilization`), `warnings`, `bin_cycles`, `cycle_offset` (run cycle that became cycle 0; 0 without a window or with `--absolute-cycles`), `windows` (list of `[begin, end]` window cycles in the output's count, `end` null if still open when the run ended; empty without a window), `signature_window_cycles`, `signature_metric`, `signature_unit`, and `clock_period` for sims.log. |
 | `DIR/runs_summary.csv` | Only with 2+ traces: one row per trace. Columns: `run` plus the scalar `summary.json` keys, and `noc<N>_<field>` for each per-NoC field. |
 
 ### Over time (bins of `--bin` cycles)
@@ -218,7 +260,7 @@ Everything for one trace is in `DIR/<name>/`. All CSVs have a header row. Cycles
 | File | Columns |
 |---|---|
 | `per_path.csv` | `noc`, `src`, `dst`, `packets`, `flits`, `mesh_hops` (median router-to-router hops), `latency_mean`, `latency_max` (cycles), `src_inferred` (true if the source was guessed: sims.log input), `flit_hops` (flits × hops). Sorted by flits, highest first. |
-| `per_link.csv` | `noc`, `flits`, `packets`, `from`, `to`, `kind`, `from_x`, `from_y`, `to_x`, `to_y` (−1 = off-chip), `utilization` (flits / cycles in the run). One row per directed channel that carried traffic. |
+| `per_link.csv` | `noc`, `flits`, `packets`, `from`, `to`, `kind`, `from_x`, `from_y`, `to_x`, `to_y` (−1 = off-chip), `utilization` (flits / traced cycles). One row per directed channel that carried traffic. |
 | `per_msg_type.csv` | `noc`, `msg_type` (number), `msg_name`, `packets`, `flits`, `latency_mean` |
 | `path_matrix.csv` | Source × destination flit totals over all NoCs; rows are sources, columns destinations (every tile plus `offchip`). |
 | `packets.csv` | One row per packet: `pkt` (id), `noc`, `src`, `src_node`, `src_inferred`, `dst`, `dst_node`, `msg_type`, `msg_name`, `length` (body flits from the header), `flits` (flits seen), `mesh_hops`, `channels` (channels crossed incl. inject/eject), `inject_cycle` (header entered the network), `eject_cycle` (tail left; −1 if not seen), `latency` (eject − inject, empty if either end wasn't seen), `delivered`, `truncated` (trace ended mid-packet), `path` (every node it passed, `tile0(0,0) > r0(0,0) > r1(1,0) > tile1(1,0)`) |
@@ -240,7 +282,7 @@ Everything for one trace is in `DIR/<name>/`. All CSVs have a header row. Cycles
 | Warning | Meaning |
 |---|---|
 | `N packet(s) cut off at the end of the trace` | The trace ended (or `--end` cut it) mid-packet. A handful is normal. |
-| `N hop(s) entered a router but were never seen leaving it` | Packets in flight when the trace ended. A handful is normal; many means a monitor gap or a filter. |
+| `N hop(s) entered a router but were never seen leaving it` | Packets in flight when the trace ended, or crossing the network when a trace window closed. A handful (per window edge) is normal; many means a monitor gap or a filter. |
 | `N header(s) point outside the XxY mesh` | Wrong `--x-tiles`/`--y-tiles`, or the trace started mid-packet. |
 | `source has no tile-port (P) events ...` | Input is a `sims.log`; see the limits in §3. |
 
@@ -259,7 +301,7 @@ Everything for one trace is in `DIR/<name>/`. All CSVs have a header row. Cycles
 | packet | One header flit + `length` body flits |
 | **injected flits** | Each flit counted once, when it enters the network. What the sources generate. |
 | **flit-hops** | Each flit counted on every router-to-router link it crosses. What loads the links. |
-| utilization | Flits on a channel ÷ cycles. Maximum 1.0 (one 64-bit flit per cycle). |
+| utilization | Flits on a channel ÷ traced cycles (the run, or the open window time for a windowed trace). Maximum 1.0 (one 64-bit flit per cycle). |
 | **latency** | From the header entering the network to the tail leaving it. Includes time spent waiting for a slow source or a busy destination. |
 | hops (`mesh_hops`) | Router-to-router links crossed. A tile talking to its own L2 slice = 0. |
 
@@ -295,6 +337,14 @@ metrics.per_msg_type(run)
 metrics.path_matrix(run, noc=None)
 metrics.signature(run, window, metric="injected")  # = signatures.csv minus app/round
 metrics.summary(run)                               # = summary.json
+```
+
+`load_run` keeps cycles counted from time 0. For a windowed trace, `run.meta["windows"]` lists the `[begin, end]` window cycles. To get the CLI's ROI-relative cycles:
+```python
+from noctrace import Run
+from noctrace.adapters import load_events, align_to_window
+ev, meta = load_events("bs_2x1_r1.csv")
+run = Run(align_to_window(ev, meta), meta)   # meta["cycle_offset"] = run cycle that became 0
 ```
 
 Example: flits sent by core 2 per 10k cycles, NoC1 only:

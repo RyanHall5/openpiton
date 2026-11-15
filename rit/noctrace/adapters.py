@@ -70,6 +70,7 @@ def read_noc_trace(path, opts):
     for line in comment:
         for k, v in re.findall(r"(\w+)=(\S+)", line):
             meta[k] = int(v) if v.isdigit() else v
+    meta["windows"] = read_windows(path)
     df = pd.read_csv(path, comment="#", dtype={"flit": str, "dir": str, "port": str})
     if "time" not in df.columns:
         df["time"] = np.nan
@@ -77,6 +78,43 @@ def read_noc_trace(path, opts):
     df["dir"] = df["dir"].str.strip().str.lower()
     df["port"] = df["port"].str.strip().str.upper()
     return _finish(df[CANON_COLS].copy()), meta
+
+
+WINDOW_RE = re.compile(r"^# window_(begin|end) cycle=(\d+)")
+
+
+def read_windows(path):
+    """Trace-window changes noted by noc_trace_mon (runs with +noc_trace_start/stop
+    or ROI markers): a list of [begin_cycle, end_cycle], end None if still open
+    when the run ended. Empty for a trace without window options."""
+    wins = []
+    with _open_text(path) as f:
+        for line in f:
+            if line[:9] != "# window_":
+                continue
+            m = WINDOW_RE.match(line)
+            if not m:
+                continue
+            c = int(m.group(2))
+            if m.group(1) == "begin":
+                wins.append([c, None])
+            elif wins and wins[-1][1] is None:
+                wins[-1][1] = c
+    return wins
+
+
+def align_to_window(ev, meta):
+    """Shift cycles so cycle 0 is where the first trace window opened (the ROI start).
+    Leaves traces without windows alone. Returns the shifted copy; the offset is
+    stored in meta["cycle_offset"] and meta["windows"] is shifted to match."""
+    wins = meta.get("windows") or []
+    off = int(wins[0][0]) if wins else 0
+    meta["cycle_offset"] = off
+    if off:
+        ev = ev.copy()
+        ev["cycle"] = ev["cycle"] - off
+        meta["windows"] = [[b - off, None if e is None else e - off] for b, e in wins]
+    return ev
 
 
 # --------------------------------------------------------------------------
