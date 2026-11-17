@@ -72,6 +72,8 @@ tail -f ~/noc_runs/<run>/sims.log      # watch a run live
 
 `status` shows `STOPPED` for a run whose job died without finishing (machine rebooted, killed by hand). Run `nocrun finish <run>` to tidy it up and record what's there.
 
+`nocrun reindex` rebuilds `runs.csv` from the run folders (each folder's `run.json` is the real record; `runs.csv` is just a summary of them). Use it if the index gets out of step, or after deleting run folders.
+
 ### Analyze at other window sizes
 
 ```bash

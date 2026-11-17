@@ -77,6 +77,9 @@ $N import --name bsold --trace "$SRC" --sims-log "$T/old_sims.log" --date 2026-1
 RI=$(ls -d "$NOC_RUNS"/2026-11-15_bsold_2x1_r1)
 check "import: folder, PASS, original log untouched" "grep -q 'status: *PASS' '$RI/run_info.txt' && [ -f '$T/old_sims.log' ] && [ -f '$RI/analysis/w10000/summary.txt' ]"
 check "index has 4 runs" "[ \$(wc -l < '$NOC_RUNS/runs.csv') -eq 5 ]"
+check "index keeps every run's name" "! grep -q '^,' '$NOC_RUNS/runs.csv' && [ \$(cut -d, -f1 '$NOC_RUNS/runs.csv' | grep -c _r) -eq 4 ]"
+cp "$NOC_RUNS/runs.csv" "$T/before.csv"; rm "$NOC_RUNS/runs.csv"; $N reindex > /dev/null
+check "reindex rebuilds the same index" "[ \$(wc -l < '$NOC_RUNS/runs.csv') -eq 5 ] && ! grep -q '^,' '$NOC_RUNS/runs.csv'"
 $N list > /dev/null && $N status > /dev/null
 check "list and status run" "true"
 

@@ -8,6 +8,7 @@
     nocrun compare RUN RUN [...] [-w N]    analyze several runs together
     nocrun import  --name NAME --trace FILE [...]   bring an existing result into the layout
     nocrun finish  RUN                     tidy up a run (done automatically at the end of a run)
+    nocrun reindex                         rebuild runs.csv from the run folders
     nocrun restore RUN [options]           continue a run from its checkpoint (start --save-at N)
 
 Every run gets a folder  $NOC_RUNS/<date>_<name>_<mesh>_r<N>/  (NOC_RUNS defaults to
@@ -207,8 +208,7 @@ def render_info(i):
     return "\n".join(L) + "\n"
 
 
-def append_runs_csv(root, i, summ):
-    p = os.path.join(root, "runs.csv")
+def index_row(i, summ):
     roi = i.get("roi", [])
     row = {
         "run": i["run"], "date": i["run"][:10], "program": i.get("program"),
@@ -224,17 +224,47 @@ def append_runs_csv(root, i, summ):
         "max_rss_gb": i.get("max_rss_gb"), "cycles_per_s": i.get("cycles_per_s"),
         "folder": os.path.basename(i["dir"]),
     }
+    return row
+
+
+def append_runs_csv(root, i, summ):
+    write_index(root, [index_row(i, summ)])
+
+
+def write_index(root, new_rows, replace_all=False):
+    p = os.path.join(root, "runs.csv")
     with open(p, "a+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         f.seek(0)
-        rows = list(csv.DictReader(f)) if f.read(1) else []
-        rows = [r for r in rows if r.get("run") != row["run"]] + [row]   # replace on re-finish
+        has = f.read(1)
+        f.seek(0)
+        rows = [] if (replace_all or not has) else list(csv.DictReader(f))
+        names = set(r["run"] for r in new_rows)
+        rows = [r for r in rows if r.get("run") and r.get("run") not in names] + new_rows  # replace on re-finish
         f.seek(0)
         f.truncate()
         w = csv.DictWriter(f, fieldnames=RUNS_CSV_COLS, extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
         fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def cmd_reindex(a):
+    """Rebuild runs.csv from the run folders' run.json files."""
+    root = runs_root(a)
+    rows = []
+    for jp in sorted(glob.glob(os.path.join(root, "*", "run.json"))):
+        d = os.path.dirname(jp)
+        try:
+            i = load_run(d)
+        except SystemExit:
+            continue
+        i["dir"] = d
+        if i.get("status") == "running":
+            continue
+        rows.append(index_row(i, summary_json(d)))
+    write_index(root, rows, replace_all=True)
+    print("runs.csv rebuilt from %d run folders" % len(rows))
 
 
 def gzip_file(src, dst):
@@ -619,6 +649,8 @@ def finish_one(d, a):
         analyze_one(d, i.get("window", 10000), None, [], quiet=True)
         i = load_run(d)
     append_runs_csv(os.path.dirname(d), i, summary_json(d))
+    if os.path.exists(j("job.pid")):
+        os.remove(j("job.pid"))
     print("%s: %s" % (i["run"], i["status"]))
 
 
@@ -781,6 +813,9 @@ def cmd_status(a):
         except (ValueError, OSError):
             alive = False
         i = load_run(d)
+        if not alive and i.get("status") not in (None, "running"):
+            os.remove(pidf)          # finished, but its job was interrupted before cleaning up
+            continue
         lc = last_trace_cycle(d)
         running.append({"run": i["run"], "state": "running" if alive else "STOPPED (job died; nocrun finish it)",
                         "started": i.get("started"), "trace up to cycle": lc if lc is not None else "",
@@ -886,6 +921,7 @@ def main(argv=None):
 
     s = sub.add_parser("status", help="runs in progress and the latest finished ones")
     s.add_argument("-n", type=int, default=5)
+    s = sub.add_parser("reindex", help="rebuild runs.csv from the run folders")
     s = sub.add_parser("list", help="the run index")
     s.add_argument("-n", type=int, default=0)
     s.add_argument("--grep", help="only rows containing this text")
@@ -903,7 +939,8 @@ def main(argv=None):
         ap.print_help()
         return
     {"start": cmd_start, "finish": cmd_finish, "analyze": cmd_analyze, "compare": cmd_compare,
-     "import": cmd_import, "status": cmd_status, "list": cmd_list, "restore": cmd_restore}[a.cmd](a)
+     "import": cmd_import, "status": cmd_status, "list": cmd_list, "restore": cmd_restore,
+     "reindex": cmd_reindex}[a.cmd](a)
 
 
 if __name__ == "__main__":
