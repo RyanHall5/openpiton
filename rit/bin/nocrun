@@ -60,7 +60,7 @@ IMPORTANT = re.compile(
     r"Simulation ->|PASS|FAIL|ERROR|Error|error:|Hit Bad trap|Hit Good trap|timeout happen|"
     r"Received SIG|max cycles|noc_trace_mon|window marker|rtl_timeout|finish_mask|"
     r"\$finish|V C S|^Time:|CPU Time|sim_start|sim_stop|model_dir|build_id|"
-    r"Warning-\[|Command line|Compiler version")
+    r"Warning-\[|Command line|Compiler version|rit_ckpt|\$save|[Ss]ave|[Rr]estor|[Rr]estart|checkpoint")
 
 
 # ----------------------------------------------------------------------------- helpers
