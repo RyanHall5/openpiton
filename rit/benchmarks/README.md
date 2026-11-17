@@ -31,75 +31,60 @@ The programs live under `verif/diag` because that's where `sims` looks for tests
 
 ## Running on the lab machine
 
-### 1. Pull and rebuild the 2x1 model
+Use `nocrun` ([`../docs/runs.md`](../docs/runs.md)): every run gets its own folder under `~/noc_runs/`, keeps running if you log out, and is analyzed when it ends. The plain `sims` command each run uses is in that run's `job.sh`.
 
-The trace monitor changed (trace window), so models built before this change need rebuilding. The script changes (`sims`, `rv64_img`) need no rebuild.
+### 1. Build the model
 
 ```bash
 source ~/openpiton/rit/setup/openpiton_env.sh
-cd ~/openpiton && git pull
 cd $PITON_ROOT/build
-rm -rf manycore/ariane_2x1
-pbuild -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -ariane 2>&1 | tee build_ariane_2x1.log
+pbuild -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1_v2 -ariane -config_rtl=MINIMAL_MONITORING 2>&1 | tee build_ariane_2x1_v2.log
 ```
+
+`MINIMAL_MONITORING` stops the testbench from printing every cache transaction into `sims.log`, which otherwise reached 1.5 GB for a 10M-cycle run. Use a new `-build_id` when runs are still using the old model.
 
 ### 2. Smoke test (a minute or two each)
 
-Tiny inputs, to check everything compiles, links and passes on the real model before the long runs:
+Tiny inputs, to check everything compiles, links and passes before the long runs:
 
 ```bash
-cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -vcs_run parsec_blackscholes.c -ariane \
-     -finish_mask 0x11 -rtl_timeout 10000000 -max_cycle=2000000000 -gcc_args=-DNUM_OPTIONS=16 \
-     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=bs16_2x1_smoke.csv
-grep -E "window marker|noc_trace_mon|PASS|FAIL|max cycles" sims.log
-cat fake_uart.log
-
-sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -vcs_run aibench_conv2d.c -ariane \
-     -finish_mask 0x11 -rtl_timeout 10000000 -max_cycle=2000000000 \
-     -gcc_args=-DIMG_H=32 -gcc_args=-DIMG_W=32 \
-     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=conv32_2x1_smoke.csv
-grep -E "window marker|noc_trace_mon|PASS|FAIL|max cycles" sims.log
-cat fake_uart.log
+nocrun start parsec_blackscholes.c -b ariane_2x1_v2 -D NUM_OPTIONS=16 --name bs16 --fg
+nocrun start aibench_conv2d.c -b ariane_2x1_v2 -D IMG_H=32 -D IMG_W=32 --name conv32 --fg
 ```
 
-**Pass looks like:**
-- `sims: NoC trace window marker noc_roi_begin at ...` and `... noc_roi_end at ...`
-- `noc_trace_mon: window opened at cycle N`, then `window closed at cycle M`
-- `Simulation -> PASS (HIT GOOD TRAP)`
-- in `fake_uart.log`: `Num Errors: 0` and each hart's ROI cycle and instruction counts
-
-`-max_cycle=2000000000` lifts the testbench's default run limit (30,000 cycles in `monitor.v`) so long runs aren't cut off; it's harmless if your runs already went past it. `-finish_mask 0x11` waits for both cores to reach the end.
-
-If the compile step fails, `rv64_cc.log` in the build directory has the compiler output.
+**Pass looks like:** `status: PASS` and `num errors: 0` in the `run_info.txt` printed at the end. `sims_summary.log` in the run folder has `NoC trace window marker ...`, `noc_trace_mon: window opened at cycle N` and `closed at cycle M`. If the compile fails, `program/rv64_cc.log` has the compiler output.
 
 ### 3. Full runs
 
 ```bash
-cd $PITON_ROOT/build
-# blackscholes, PARSEC simsmall input (4096 options), 1 run
-sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -vcs_run parsec_blackscholes.c -ariane \
-     -finish_mask 0x11 -rtl_timeout 10000000 -max_cycle=2000000000 \
-     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=blackscholes_2x1_r1.csv
-
-# conv2d, one 227x227 image
-sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -vcs_run aibench_conv2d.c -ariane \
-     -finish_mask 0x11 -rtl_timeout 10000000 -max_cycle=2000000000 \
-     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=conv2d_2x1_r1.csv
+nocrun start parsec_blackscholes.c -b ariane_2x1_v2        # PARSEC simsmall (4096 options), 1 run
+nocrun start aibench_conv2d.c -b ariane_2x1_v2             # one 227x227 image
+nocrun status                                              # check on them
 ```
 
-Each run overwrites `sims.log` and `fake_uart.log`, so copy them next to the trace if you want to keep them (e.g. `cp fake_uart.log blackscholes_2x1_r1.uart.log`).
+**Measured on the lab machine (2x1, VCS):**
 
-**How long:** the smoke tests tell you. Divide each hart's "ROI cycles" (printed in `fake_uart.log`) by the run's wall time to get the sim speed, then scale. Rough guess from the instruction counts above, assuming Ariane averages 1.5-3 cycles per instruction on this code (not measured yet): blackscholes simsmall is roughly 2-5 million cycles (5-15 minutes at ~5,800 cycles/s); conv2d at 227x227 is roughly 7-15 million (20-45 minutes). PARSEC's own setting of 100 runs (`-gcc_args=-DNUM_RUNS=100`) is 100 times that: an overnight-plus run, best left for when we know we need it. Long runs keep going if you log out only if started with `nohup` or inside `tmux`/`screen`.
+| | ROI cycles per hart | cycles per instruction | whole run | wall time |
+|---|---|---|---|---|
+| blackscholes simsmall, 1 run | 2.03–2.09 M | ~2.3 | 3.3 M cycles | 20 min |
+| conv2d 227x227 | ~16 M (estimate: 6.8 M instructions at ~2.3) | | ~18 M | ~1.5–2 h |
+
+The simulator runs about 2,700–4,500 cycles/s, slower while the NoC is busy. PARSEC's own setting of 100 runs (`-D NUM_RUNS=100`) is 100 times the blackscholes ROI: more than a day.
+
+Two things that ended earlier runs, both handled by `nocrun` and the new model:
+- **`FAIL(TIMEOUT)` at exactly `-rtl_timeout` cycles** (the first conv2d run): `pc_cmp` marked three nonexistent threads per Ariane tile as active, and their timeout always ran out. Fixed in `pc_cmp.v.pyv`; models built before the fix stop every run at `-rtl_timeout` cycles, and `nocrun` sets it to 2e9 for them.
+- **`Received SIGHUP (signal 1), exiting.`** (the second conv2d run): VCS installs its own handler for the hang-up signal sent when an SSH session closes, which overrides `nohup`. `nocrun` starts runs in their own session (`setsid`), which never gets that signal.
 
 ### 4. Analyze
 
-`noctrace` counts cycles from the ROI start for these traces:
+Each run is analyzed at a 10,000-cycle window when it ends (`<run>/analysis/w10000/`). Other sizes, and several runs together:
 
 ```bash
-python3 -m noctrace blackscholes_2x1_r1.csv --bin 10000 --window 10000 --app Blackscholes --round 1 -o ~/noc_results
-cat ~/noc_results/blackscholes_2x1_r1/summary.txt
+nocrun analyze blackscholes_2x1_r1 -w 80000
+nocrun compare blackscholes_2x1_r1 conv2d_2x1_r1 -w 20000
 ```
+
+`noctrace` counts cycles from the ROI start for these traces.
 
 ## Options
 

@@ -118,6 +118,26 @@ rm -rf $PITON_ROOT/build/manycore/ariane_2x2
 
 Test programs are in `$PITON_ROOT/piton/verif/diag/c/riscv/ariane/`. List them with `ls $PITON_ROOT/piton/verif/diag/c/riscv/ariane/`. For example: `hello_world.c`, `hello_world_many.c`, `add_shared_var.c`, `accu_test.c`.
 
+### Start a run with nocrun (recommended)
+
+Each run gets its own folder under `~/noc_runs/`, survives logging out, and is analyzed when it ends. Details: [`runs.md`](runs.md).
+
+```bash
+# template
+nocrun start <program> -b <build_id> [-m <XxY>] [-D <NAME>=<value> ...] [--name <name>] [--save-at <cycle>] [--fg]
+nocrun status                                   # what's running, what just finished
+nocrun analyze <run> -w <window>                # another window size -> <run>/analysis/w<window>/
+nocrun compare <run> <run> ... -w <window>      # several runs together
+nocrun restore <run>                            # continue a run from its checkpoint
+```
+
+```bash
+# examples
+nocrun start parsec_blackscholes.c -b ariane_2x1_v2 -D NUM_OPTIONS=16 --name bs16 --fg   # smoke test, wait for it
+nocrun start aibench_conv2d.c -b ariane_2x1_v2                                           # full run, background
+nocrun analyze conv2d_2x1_r1 -w 80000
+```
+
 ### Run a simulation with tracing
 
 ```bash

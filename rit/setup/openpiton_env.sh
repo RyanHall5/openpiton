@@ -50,3 +50,7 @@ export PITON_VCS_FIX_ARGS="-vcs_build_args=-LDFLAGS -vcs_build_args=-B$HOME/opt/
 
 # NoC trace analysis: python3 -m noctrace ...
 export PYTHONPATH=$PITON_ROOT/rit${PYTHONPATH:+:$PYTHONPATH}
+
+# nocrun: run simulations into their own folders (rit/docs/runs.md)
+export PATH=$PITON_ROOT/rit/bin:$PATH
+export NOC_RUNS=${NOC_RUNS:-$HOME/noc_runs}

@@ -1,0 +1,910 @@
+#!/usr/bin/env python3
+"""nocrun: run OpenPiton simulations, each in its own folder, and keep the results.
+
+    nocrun start   PROGRAM.c [options]     start a run (detached by default)
+    nocrun status                          runs in progress, and the last few finished
+    nocrun list    [-n N]                  the run index (runs.csv)
+    nocrun analyze RUN [RUN ...] [-w N]    (re)analyze traces at another window size
+    nocrun compare RUN RUN [...] [-w N]    analyze several runs together
+    nocrun import  --name NAME --trace FILE [...]   bring an existing result into the layout
+    nocrun finish  RUN                     tidy up a run (done automatically at the end of a run)
+    nocrun restore RUN [options]           continue a run from its checkpoint (start --save-at N)
+
+Every run gets a folder  $NOC_RUNS/<date>_<name>_<mesh>_r<N>/  (NOC_RUNS defaults to
+~/noc_runs). sims runs inside it, so files that sims overwrites (sims.log, diag.c,
+fake_uart.log, ...) can't collide with another run. When the run ends, the folder is
+tidied up:
+
+    run_info.txt      what was run and how it ended (run.json: the same, machine-readable)
+    job.sh            the exact commands, rerunnable:  bash job.sh
+    uart.log          the program's output (fake_uart.log)
+    trace.csv.gz      the NoC trace, compressed (noctrace reads .gz directly)
+    sims_summary.log  the important lines of sims.log, plus its last 300 lines
+    program/          the compiled program: diag.c, diag.exe, symbol.tbl, diag.dump, rv64_cc.log
+    analysis/w<N>/    noctrace results for window/bin size N (one folder per size)
+    logs/             only with --keep-logs: full sims.log and instruction traces, gzipped
+
+and a row is added to $NOC_RUNS/runs.csv. The full sims.log and Ariane's per-instruction
+traces (trace_hart_*.log, ~1 GB per million cycles together) are not kept unless
+--keep-logs is given.
+
+See rit/docs/runs.md.
+"""
+import argparse
+import csv
+import datetime
+import fcntl
+import glob
+import gzip
+import json
+import os
+import re
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+from collections import deque
+
+RIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(RIT)
+VERSION = 1
+
+RUNS_CSV_COLS = ["run", "date", "program", "mesh", "build_id", "defines", "status",
+                 "sim_cycles", "roi_cycles_max", "roi_instructions_max", "num_errors",
+                 "packets", "injected_flits", "load_flits_per_cycle", "trace_mb",
+                 "elapsed_s", "max_rss_gb", "cycles_per_s", "folder"]
+
+IMPORTANT = re.compile(
+    r"Simulation ->|PASS|FAIL|ERROR|Error|error:|Hit Bad trap|Hit Good trap|timeout happen|"
+    r"Received SIG|max cycles|noc_trace_mon|window marker|rtl_timeout|finish_mask|"
+    r"\$finish|V C S|^Time:|CPU Time|sim_start|sim_stop|model_dir|build_id|"
+    r"Warning-\[|Command line|Compiler version")
+
+
+# ----------------------------------------------------------------------------- helpers
+
+def die(msg):
+    sys.stderr.write("nocrun: " + msg + "\n")
+    sys.exit(1)
+
+
+def runs_root(a=None):
+    d = (getattr(a, "runs_dir", None) if a else None) or os.environ.get("NOC_RUNS") \
+        or os.path.expanduser("~/noc_runs")
+    return os.path.abspath(d)
+
+
+def now():
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def sh(cmd, cwd=None):
+    try:
+        return subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              universal_newlines=True).stdout.strip()
+    except OSError:
+        return ""
+
+
+def git_info():
+    commit = sh(["git", "rev-parse", "--short", "HEAD"], REPO)
+    branch = sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], REPO)
+    dirty = sh(["git", "status", "--porcelain", "--untracked-files=no"], REPO)
+    return {"commit": commit, "branch": branch,
+            "uncommitted_changes": len(dirty.splitlines()) if dirty else 0}
+
+
+def parse_mesh(m):
+    mm = re.fullmatch(r"(\d+)x(\d+)", m)
+    if not mm:
+        die("mesh must look like 2x1, got %r" % m)
+    return int(mm.group(1)), int(mm.group(2))
+
+
+def short_name(program):
+    stem = os.path.basename(program)
+    stem = re.sub(r"\.(c|S|s)$", "", stem)
+    return re.sub(r"^(parsec_|aibench_)", "", stem)
+
+
+def next_round(root, name, mesh):
+    rs = [0]
+    for d in glob.glob(os.path.join(root, "*_%s_%s_r*" % (name, mesh))):
+        m = re.search(r"_r(\d+)$", d)
+        if m:
+            rs.append(int(m.group(1)))
+    return max(rs) + 1
+
+
+def new_run_dir(root, date, name, mesh):
+    os.makedirs(root, exist_ok=True)
+    r = next_round(root, name, mesh)
+    d = os.path.join(root, "%s_%s_%s_r%d" % (date, name, mesh, r))
+    os.makedirs(d)
+    return d, r
+
+
+def find_program(program):
+    if os.path.isfile(program):
+        return os.path.abspath(program)
+    hits = []
+    for base, _, files in os.walk(os.path.join(REPO, "piton", "verif", "diag")):
+        if os.path.basename(program) in files:
+            hits.append(os.path.join(base, os.path.basename(program)))
+    if not hits:
+        die("can't find %s under piton/verif/diag (sims looks there)" % program)
+    if len(hits) > 1:
+        die("several files named %s; sims would refuse too:\n  %s" % (program, "\n  ".join(hits)))
+    return hits[0]
+
+
+def load_run(d):
+    p = os.path.join(d, "run.json")
+    if not os.path.exists(p):
+        die("%s is not a nocrun run folder (no run.json)" % d)
+    with open(p) as f:
+        return json.load(f)
+
+
+def save_run(d, info):
+    with open(os.path.join(d, "run.json"), "w") as f:
+        json.dump(info, f, indent=2)
+    with open(os.path.join(d, "run_info.txt"), "w") as f:
+        f.write(render_info(info))
+
+
+def render_info(i):
+    L = ["# %s" % i["run"], ""]
+
+    def kv(k, v):
+        if v not in (None, "", [], {}):
+            L.append("%-22s %s" % (k + ":", v))
+    kv("program", i.get("program"))
+    kv("program path", i.get("program_path"))
+    kv("name / round", "%s / r%s" % (i.get("name"), i.get("round")))
+    kv("mesh", i.get("mesh"))
+    kv("model (build_id)", i.get("build_id"))
+    kv("model built", i.get("model_built"))
+    kv("defines", " ".join(i.get("defines", [])))
+    kv("trace", i.get("trace_desc"))
+    kv("git", "%s on %s%s" % (i["git"]["commit"], i["git"]["branch"],
+                               (" (+%d uncommitted changes)" % i["git"]["uncommitted_changes"])
+                               if i["git"].get("uncommitted_changes") else "") if i.get("git") else "")
+    kv("host", i.get("host"))
+    kv("started", i.get("started"))
+    kv("note", i.get("note"))
+    if i.get("imported"):
+        kv("imported", "yes: copied in from %s" % i.get("imported_from", "an earlier run"))
+    L.append("")
+    L.append("## result")
+    kv("status", i.get("status", "running"))
+    kv("finished", i.get("finished"))
+    kv("sim cycles", i.get("sim_cycles"))
+    kv("wall time", i.get("elapsed"))
+    kv("CPU time (s)", i.get("cpu_s"))
+    kv("speed (cycles/s)", i.get("cycles_per_s"))
+    kv("max memory (GB)", i.get("max_rss_gb"))
+    kv("exit", i.get("exit"))
+    for h in i.get("roi", []):
+        kv("hart %d ROI" % h["hart"], "%s cycles, %s instructions" % (h["cycles"], h["instructions"]))
+    kv("num errors", i.get("num_errors"))
+    kv("trace", i.get("trace_file") and "%s (%s MB)" % (i["trace_file"], i.get("trace_mb")))
+    kv("analysis", ", ".join(i.get("analyses", [])))
+    ck = i.get("checkpoint") or {}
+    if ck.get("at") is not None:
+        kv("checkpoint", "%s at cycle %s%s" % (ck.get("file"), ck["at"],
+                                               (" (%s GB)" % ck["size_gb"]) if ck.get("size_gb") else
+                                               ("" if i.get("status") == "running" else " (NOT written: see sims_summary.log)")))
+    kv("restored from", i.get("restored_from") and "%s (%s)" % (i["restored_from"], i.get("checkpoint_used")))
+    L.append("")
+    L.append("## how to rerun")
+    L.append("    " + i.get("rerun", "(imported run)"))
+    if i.get("sims_cmd"):
+        L.append("")
+        L.append("## sims command")
+        L.append("    " + i["sims_cmd"])
+    return "\n".join(L) + "\n"
+
+
+def append_runs_csv(root, i, summ):
+    p = os.path.join(root, "runs.csv")
+    roi = i.get("roi", [])
+    row = {
+        "run": i["run"], "date": i["run"][:10], "program": i.get("program"),
+        "mesh": i.get("mesh"), "build_id": i.get("build_id"),
+        "defines": " ".join(i.get("defines", [])), "status": i.get("status"),
+        "sim_cycles": i.get("sim_cycles"),
+        "roi_cycles_max": max([h["cycles"] for h in roi]) if roi else "",
+        "roi_instructions_max": max([h["instructions"] for h in roi]) if roi else "",
+        "num_errors": i.get("num_errors"),
+        "packets": summ.get("packets", ""), "injected_flits": summ.get("injected_flits", ""),
+        "load_flits_per_cycle": summ.get("injection_rate_flits_per_cycle", ""),
+        "trace_mb": i.get("trace_mb"), "elapsed_s": i.get("elapsed_s"),
+        "max_rss_gb": i.get("max_rss_gb"), "cycles_per_s": i.get("cycles_per_s"),
+        "folder": os.path.basename(i["dir"]),
+    }
+    with open(p, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.seek(0)
+        rows = list(csv.DictReader(f)) if f.read(1) else []
+        rows = [r for r in rows if r.get("run") != row["run"]] + [row]   # replace on re-finish
+        f.seek(0)
+        f.truncate()
+        w = csv.DictWriter(f, fieldnames=RUNS_CSV_COLS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def gzip_file(src, dst):
+    with open(src, "rb") as fi, gzip.open(dst, "wb", compresslevel=6) as fo:
+        shutil.copyfileobj(fi, fo, 1 << 20)
+    os.remove(src)
+
+
+def mb(p):
+    return round(os.path.getsize(p) / 1e6, 1) if os.path.exists(p) else None
+
+
+def ps_per_cycle(trace):
+    """Clock period from the trace (time / cycle on data lines); 1000 if unknown."""
+    if not trace or not os.path.exists(trace):
+        return 1000
+    op = gzip.open if trace.endswith(".gz") else open
+    try:
+        with op(trace, "rt") as f:
+            for line in f:
+                if line[0].isdigit():
+                    c, t = line.split(",")[:2]
+                    if int(c) > 0:
+                        return max(1, round(int(t) / int(c)))
+    except (OSError, ValueError):
+        pass
+    return 1000
+
+
+def scan_log(path, summary_out):
+    """Status, VCS end report and the important lines of a (possibly huge) sims.log."""
+    res = {"status": None}
+    tail = deque(maxlen=300)
+    imp = []
+    op = gzip.open if path.endswith(".gz") else open
+    with op(path, "rt", errors="replace") as f:
+        for line in f:
+            tail.append(line)
+            if IMPORTANT.search(line):
+                if len(imp) < 5000:
+                    imp.append(line)
+                if "Simulation -> PASS" in line:
+                    res["status"] = "PASS"
+                elif "Simulation -> FAIL" in line:
+                    m = re.search(r"FAIL\((.*?)\)", line)
+                    res["status"] = "FAIL(%s)" % (m.group(1) if m else "?")
+                elif "Received SIG" in line and not res["status"]:
+                    m = re.search(r"Received (SIG\w+)", line)
+                    res["status"] = "KILLED(%s)" % (m.group(1) if m else "signal")
+                m = re.match(r"Time:\s+(\d+)\s*ps", line)
+                if m:
+                    res["time_ps"] = int(m.group(1))
+                m = re.search(r"CPU Time:\s+([\d.]+)", line)
+                if m:
+                    res["cpu_s"] = float(m.group(1))
+    if summary_out:
+        with open(summary_out, "w") as f:
+            f.write("# important lines of sims.log (first 5000)\n")
+            f.writelines(imp)
+            f.write("\n# last 300 lines of sims.log\n")
+            f.writelines(tail)
+    return res
+
+
+def parse_uart(path):
+    roi, err = [], None
+    if os.path.exists(path):
+        for line in open(path, errors="replace"):
+            m = re.search(r"hart (\d+): ROI cycles (\d+), instructions (\d+)", line)
+            if m:
+                roi.append({"hart": int(m.group(1)), "cycles": int(m.group(2)),
+                            "instructions": int(m.group(3))})
+            m = re.search(r"Num Errors:\s*(\d+)", line)
+            if m:
+                err = int(m.group(1))
+    return roi, err
+
+
+def parse_time_v(path):
+    r = {}
+    if not os.path.exists(path):
+        return r
+    for line in open(path, errors="replace"):
+        line = line.strip()
+        if line.startswith("Elapsed (wall clock)"):
+            v = line.rsplit(" ", 1)[-1]
+            parts = [float(x) for x in v.split(":")]
+            s = 0.0
+            for p in parts:
+                s = s * 60 + p
+            r["elapsed_s"] = round(s)
+            r["elapsed"] = v
+        elif line.startswith("Maximum resident set size"):
+            r["max_rss_gb"] = round(int(line.rsplit(" ", 1)[-1]) / 1e6, 2)
+        elif line.startswith("Exit status"):
+            r["exit"] = "exit status " + line.rsplit(" ", 1)[-1]
+        elif line.startswith("Command terminated by signal"):
+            r["exit"] = line
+    return r
+
+
+def summary_json(d, tag=None):
+    i = load_run(d)
+    tag = tag or i.get("default_analysis")
+    p = os.path.join(d, "analysis", tag or "", "summary.json")
+    if tag and os.path.exists(p):
+        with open(p) as f:
+            return json.load(f)
+    return {}
+
+
+# ----------------------------------------------------------------------------- start
+
+def cmd_start(a):
+    for need in ("sims",):
+        if not shutil.which(need):
+            die("%s isn't on PATH: source your OpenPiton env script first" % need)
+    model_dir = os.environ.get("MODEL_DIR")
+    if not model_dir:
+        die("MODEL_DIR isn't set: source your OpenPiton env script first")
+    x, y = parse_mesh(a.mesh)
+    build_id = a.build_id or "ariane_%s" % a.mesh
+    simv = os.path.join(model_dir, "manycore", build_id, "simv")
+    if not os.path.exists(simv):
+        die("no model %s (looked for %s). Build it with:\n"
+            "  pbuild -sys=manycore -x_tiles=%d -y_tiles=%d -build_id=%s -ariane"
+            % (build_id, simv, x, y, build_id))
+    prog_path = find_program(a.program)
+    program = os.path.basename(prog_path)
+    name = a.name or short_name(program)
+    root = runs_root(a)
+    date = datetime.date.today().isoformat()
+    d, rnd = new_run_dir(root, date, name, a.mesh)
+    ntiles = x * y
+    mask = a.finish_mask or hex(sum(1 << (4 * t) for t in range(ntiles)))
+    if a.rtl_timeout is None:
+        # Models built before the pc_cmp fix (thread slots 1-3 of Ariane tiles never
+        # finish an instruction) fail EVERY run after rtl_timeout cycles. For those,
+        # use a timeout that never fires.
+        fix_t = sh(["git", "log", "-1", "--format=%ct", "--", "piton/verif/env/manycore/pc_cmp.v.pyv"], REPO)
+        if fix_t and os.path.getmtime(simv) < int(fix_t):
+            a.rtl_timeout = 2000000000
+            print("note: model %s predates the pc_cmp timeout fix, so --rtl-timeout is set to 2e9 "
+                  "(no hang detection). Rebuild it to get hang detection back." % build_id)
+        else:
+            a.rtl_timeout = 20000000
+
+    sims = ["sims", "-sys=manycore", "-x_tiles=%d" % x, "-y_tiles=%d" % y,
+            "-build_id=%s" % build_id, "-vcs_run", program]
+    if a.core == "ariane":
+        sims.append("-ariane")
+    sims += ["-finish_mask=%s" % mask, "-rtl_timeout=%d" % a.rtl_timeout,
+             "-max_cycle=%d" % a.max_cycle]
+    sims += ["-gcc_args=-D%s" % dfn for dfn in a.define]
+    trace_desc = "off"
+    if not a.no_trace:
+        sims += ["-sim_run_args=+noc_trace", "-sim_run_args=+noc_trace_file=trace.csv"]
+        parts = ["ROI markers if the program has them"]
+        if a.full_trace:
+            sims.append("-sim_run_args=+noc_trace_full")
+            parts = ["whole run"]
+        if a.trace_start is not None:
+            sims.append("-sim_run_args=+noc_trace_start=%d" % a.trace_start)
+            parts.append("from cycle %d" % a.trace_start)
+        if a.trace_stop is not None:
+            sims.append("-sim_run_args=+noc_trace_stop=%d" % a.trace_stop)
+            parts.append("until cycle %d" % a.trace_stop)
+        trace_desc = ", ".join(parts)
+    if a.save_at is not None:
+        sims += ["-sim_run_args=+rit_save_at=%d" % a.save_at,
+                 "-sim_run_args=+rit_save_name=checkpoint.vcs"]
+    sims += ["-sim_run_args=%s" % s for s in a.sim_arg]
+    sims += a.sims_arg
+
+    rerun = ["nocrun", "start", program, "--mesh", a.mesh, "--build-id", build_id]
+    for dfn in a.define:
+        rerun += ["-D", dfn]
+    if a.name:
+        rerun += ["--name", a.name]
+    for flag, val in (("--rtl-timeout", a.rtl_timeout), ("--max-cycle", a.max_cycle),
+                      ("--window", a.window)):
+        rerun += [flag, str(val)]
+    for flag, on in (("--no-trace", a.no_trace), ("--full-trace", a.full_trace),
+                     ("--keep-logs", a.keep_logs)):
+        if on:
+            rerun.append(flag)
+    for flag, val in (("--trace-start", a.trace_start), ("--trace-stop", a.trace_stop),
+                      ("--save-at", a.save_at)):
+        if val is not None:
+            rerun += [flag, str(val)]
+    for s in a.sim_arg:
+        rerun += ["--sim-arg", s]
+    for s in a.sims_arg:
+        rerun += ["--sims-arg=" + s]
+
+    info = {
+        "nocrun_version": VERSION, "run": os.path.basename(d), "dir": d, "name": name,
+        "round": rnd, "app": a.app or name[:1].upper() + name[1:], "program": program,
+        "program_path": os.path.relpath(prog_path, REPO), "mesh": a.mesh, "tiles": ntiles,
+        "build_id": build_id,
+        "model_built": datetime.datetime.fromtimestamp(os.path.getmtime(simv)).strftime("%Y-%m-%d %H:%M"),
+        "defines": a.define, "trace_desc": trace_desc, "window": a.window,
+        "keep_logs": a.keep_logs, "git": git_info(), "host": socket.gethostname(),
+        "started": now(), "note": a.note, "status": "running",
+        "checkpoint": {"at": a.save_at, "file": "checkpoint.vcs"} if a.save_at is not None else None,
+        "sims_cmd": " ".join(shlex.quote(s) for s in sims),
+        "rerun": " ".join(shlex.quote(s) for s in rerun),
+    }
+    save_run(d, info)
+
+    launch(d, info, a, ntiles,
+           "# sims copies its output into sims.log itself; keep only the tail of the console copy\n"
+           "{timev}%s 2>&1 | tail -n 2000 > sims_console_tail.log\n"
+           "echo \"${{PIPESTATUS[0]}}\" > sims_exit_status" % info["sims_cmd"])
+
+
+def launch(d, info, a, ntiles, run_lines):
+    """Write job.sh (the exact commands) and run it, detached unless --fg."""
+    # Ariane's instruction tracers write a line per instruction (~70 bytes each).
+    # Point them at /dev/null unless the logs are wanted.
+    devnull = ""
+    if not a.keep_logs:
+        names = ["trace_hart_%d.log" % h for h in range(ntiles)] + \
+                ["trace_hart_%d_commit.log" % h for h in range(ntiles)] + ["trace_hart_00.dasm"]
+        devnull = "for f in %s; do ln -sf /dev/null \"$f\"; done" % " ".join(names)
+    timev = "/usr/bin/time -v -o time.txt " if os.path.exists("/usr/bin/time") else ""
+    job = """#!/bin/bash
+# Generated by nocrun for run {run}. Rerun this exact simulation with:  bash job.sh
+cd "$(dirname "$(readlink -f "$0")")"
+echo $$ > job.pid
+{devnull}
+{run_lines}
+python3 {nocrun} finish "$PWD"
+rm -f job.pid
+""".format(run=info["run"], devnull=devnull, run_lines=run_lines.format(timev=timev),
+           nocrun=shlex.quote(os.path.abspath(__file__)))
+    jp = os.path.join(d, "job.sh")
+    with open(jp, "w") as f:
+        f.write(job)
+    os.chmod(jp, 0o755)
+
+    print("run folder: %s" % d)
+    if a.fg:
+        subprocess.call(["bash", jp])
+        print(open(os.path.join(d, "run_info.txt")).read())
+        return
+    # start_new_session: setsid() for the job. It gets no controlling terminal, so
+    # closing the SSH session can't send it SIGHUP (which VCS's simv would act on).
+    with open(os.path.join(d, "job.out"), "w") as out:
+        subprocess.Popen(["bash", jp], cwd=d, stdout=out, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    print("started in the background (safe to log out). Check on it with:")
+    print("  nocrun status")
+    print("  tail -f %s/sims.log" % d)
+
+
+# ----------------------------------------------------------------------------- restore
+
+def cmd_restore(a):
+    src = os.path.abspath(resolve_run(a.run, a))
+    si = load_run(src)
+    ck_file = (si.get("checkpoint") or {}).get("file") or "checkpoint.vcs"
+    ck = os.path.join(src, ck_file)
+    if not os.path.exists(ck):
+        die("%s has no checkpoint (%s). Make one with: nocrun start ... --save-at CYCLE" % (src, ck_file))
+    model_dir = os.environ.get("MODEL_DIR")
+    if not model_dir:
+        die("MODEL_DIR isn't set: source your OpenPiton env script first")
+    simv = os.path.join(model_dir, "manycore", si["build_id"], "simv")
+    if not os.path.exists(simv):
+        die("model %s is gone (%s); a checkpoint only restores into the simv that saved it" % (si["build_id"], simv))
+    if os.path.getmtime(simv) > os.path.getmtime(ck):
+        print("warning: model %s was rebuilt after this checkpoint was saved; the restore will "
+              "probably fail. A checkpoint only works with the exact simv that wrote it." % si["build_id"])
+    name = a.name or si["name"]
+    root = runs_root(a)
+    d, rnd = new_run_dir(root, datetime.date.today().isoformat(), name, si["mesh"])
+    plus = [] if a.no_trace else ["+noc_trace_file=trace.csv"]
+    plus += a.sim_arg
+    cmd = [simv, "-r", ck] + plus
+    info = {
+        "nocrun_version": VERSION, "run": os.path.basename(d), "dir": d, "name": name, "round": rnd,
+        "app": a.app or si.get("app") or name, "program": si.get("program"),
+        "program_path": si.get("program_path"), "mesh": si["mesh"], "tiles": si.get("tiles", 1),
+        "build_id": si["build_id"], "model_built": si.get("model_built"),
+        "defines": si.get("defines", []), "window": a.window or si.get("window", 10000),
+        "keep_logs": a.keep_logs, "git": git_info(), "host": socket.gethostname(),
+        "started": now(), "note": a.note, "status": "running",
+        "restored_from": si["run"], "checkpoint_used": ck,
+        "trace_desc": "as set in %s (window options are fixed when a run starts)" % si["run"],
+        "sims_cmd": " ".join(shlex.quote(c) for c in cmd),
+        "rerun": "nocrun restore %s%s" % (si["run"], "".join(" --sim-arg " + shlex.quote(x) for x in a.sim_arg)),
+    }
+    save_run(d, info)
+    if os.path.isdir(os.path.join(src, "program")):
+        shutil.copytree(os.path.join(src, "program"), os.path.join(d, "program"))
+    launch(d, info, a, info["tiles"],
+           "{timev}%s > sims.log 2>&1\necho $? > sims_exit_status" % info["sims_cmd"])
+
+
+# ----------------------------------------------------------------------------- finish
+
+def cmd_finish(a):
+    for d in a.runs:
+        finish_one(os.path.abspath(d), a)
+
+
+def finish_one(d, a):
+    i = load_run(d)
+    j = lambda *p: os.path.join(d, *p)  # noqa: E731
+    keep_logs = i.get("keep_logs") or getattr(a, "keep_logs", False)
+
+    log = j("sims.log") if os.path.exists(j("sims.log")) else (
+        j("sim.log") if os.path.exists(j("sim.log")) else None)
+    res = scan_log(log, j("sims_summary.log")) if log else {}
+    tv = parse_time_v(j("time.txt"))
+    i.update({k: v for k, v in tv.items()})
+
+    # program output
+    if os.path.exists(j("fake_uart.log")):
+        shutil.copy(j("fake_uart.log"), j("uart.log"))
+    roi, err = parse_uart(j("uart.log"))
+    i["roi"], i["num_errors"] = roi, err
+
+    # trace
+    tr = None
+    if os.path.exists(j("trace.csv")):
+        gzip_file(j("trace.csv"), j("trace.csv.gz"))
+    if os.path.exists(j("trace.csv.gz")):
+        tr = j("trace.csv.gz")
+        i["trace_file"], i["trace_mb"] = "trace.csv.gz", mb(tr)
+
+    # status
+    status = res.get("status")
+    if not status:
+        if "signal" in str(i.get("exit", "")):
+            status = "KILLED(%s)" % i["exit"].rsplit(" ", 1)[-1]
+        else:
+            status = "INCOMPLETE" if log else "NO LOG"
+    if status == "PASS" and err:
+        status = "PASS(sim) but %d program errors" % err
+    i["status"] = status
+    if res.get("time_ps"):
+        i["sim_cycles"] = res["time_ps"] // ps_per_cycle(tr)
+    if res.get("cpu_s"):
+        i["cpu_s"] = res["cpu_s"]
+        if i.get("sim_cycles"):
+            i["cycles_per_s"] = round(i["sim_cycles"] / max(res["cpu_s"], 1e-9))
+
+    # compiled program
+    os.makedirs(j("program"), exist_ok=True)
+    for f in ("diag.c", "diag.exe", "symbol.tbl", "rv64_cc.log", "diag.dump"):
+        if os.path.exists(j(f)):
+            shutil.move(j(f), j("program", f))
+    for f in ("mem.image", "diag.o", "diag.ev"):
+        if os.path.exists(j(f)):
+            os.remove(j(f))
+
+    # logs
+    hart_logs = [p for p in glob.glob(j("trace_hart_*")) if not os.path.islink(p)]
+    if keep_logs:
+        os.makedirs(j("logs"), exist_ok=True)
+        if log:
+            gzip_file(log, j("logs", os.path.basename(log) + ".gz"))
+        for p in hart_logs:
+            gzip_file(p, j("logs", os.path.basename(p) + ".gz"))
+    for p in ([j("sims.log"), j("sim.log")] if not keep_logs else [j("sim.log")]):
+        if os.path.exists(p):
+            os.remove(p)
+    for p in glob.glob(j("trace_hart_*")):
+        if os.path.islink(p) or not keep_logs:
+            os.remove(p)
+
+    ck = (i.get("checkpoint") or {}).get("file")
+    if ck and os.path.exists(j(ck)):
+        i["checkpoint"]["size_gb"] = round(os.path.getsize(j(ck)) / 1e9, 2)
+    i["finished"] = now()
+    save_run(d, i)
+
+    # analysis at the run's default window
+    if tr and not getattr(a, "no_analysis", False):
+        analyze_one(d, i.get("window", 10000), None, [], quiet=True)
+        i = load_run(d)
+    append_runs_csv(os.path.dirname(d), i, summary_json(d))
+    print("%s: %s" % (i["run"], i["status"]))
+
+
+# ----------------------------------------------------------------------------- analyze
+
+def analyze_one(d, window, tag, extra, quiet=False):
+    i = load_run(d)
+    tr = os.path.join(d, i.get("trace_file") or "trace.csv.gz")
+    if not os.path.exists(tr):
+        die("%s has no trace" % d)
+    tag = tag or "w%d" % window
+    cmd = [sys.executable, "-m", "noctrace", tr, "-o", os.path.join(d, "analysis"), "--name", tag,
+           "--bin", str(window), "--window", str(window),
+           "--app", i.get("app") or i["name"], "--round", str(i.get("round", 1))] + extra
+    env = dict(os.environ)
+    env["PYTHONPATH"] = RIT + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    r = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       universal_newlines=True)
+    if r.returncode != 0:
+        sys.stderr.write(r.stdout)
+        die("noctrace failed on %s" % d)
+    if not quiet:
+        print(r.stdout.strip())
+    an = set(i.get("analyses", []))
+    an.add(tag)
+    i["analyses"] = sorted(an)
+    if not i.get("default_analysis"):
+        i["default_analysis"] = tag
+    save_run(d, i)
+    out = os.path.join(d, "analysis", tag)
+    print("-> %s" % out)
+    return out
+
+
+def cmd_analyze(a):
+    for d in a.runs:
+        analyze_one(os.path.abspath(resolve_run(d, a)), a.window, a.tag, a.noctrace_args)
+
+
+def resolve_run(d, a):
+    """A run folder path, or just its name inside the runs folder."""
+    if os.path.isdir(d):
+        return d
+    p = os.path.join(runs_root(a), d)
+    if os.path.isdir(p):
+        return p
+    hits = glob.glob(os.path.join(runs_root(a), "*%s*" % d))
+    if len(hits) == 1:
+        return hits[0]
+    die("no run folder %r%s" % (d, (" (matches: %s)" % ", ".join(map(os.path.basename, hits))) if hits else ""))
+
+
+# ----------------------------------------------------------------------------- compare
+
+def cmd_compare(a):
+    ds = [os.path.abspath(resolve_run(d, a)) for d in a.runs]
+    infos = [load_run(d) for d in ds]
+    traces = [os.path.join(d, i.get("trace_file") or "trace.csv.gz") for d, i in zip(ds, infos)]
+    for t in traces:
+        if not os.path.exists(t):
+            die("no trace in %s" % os.path.dirname(t))
+    out = a.out or os.path.join(runs_root(a), "compare",
+                                datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "_w%d" % a.window)
+    cmd = [sys.executable, "-m", "noctrace"] + traces + ["-o", out, "--bin", str(a.window),
+                                                         "--window", str(a.window)]
+    for i in infos:
+        cmd += ["--name", i["run"], "--app", i.get("app") or i["name"], "--round", str(i.get("round", 1))]
+    cmd += a.noctrace_args
+    env = dict(os.environ)
+    env["PYTHONPATH"] = RIT + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    r = subprocess.run(cmd, env=env)
+    if r.returncode:
+        die("noctrace failed")
+    with open(os.path.join(out, "compared_runs.txt"), "w") as f:
+        f.write("\n".join(ds) + "\n")
+    print("-> %s  (runs_summary.csv has one row per run)" % out)
+
+
+# ----------------------------------------------------------------------------- import
+
+def cmd_import(a):
+    if not os.path.exists(a.trace):
+        die("no such trace %s" % a.trace)
+    root = runs_root(a)
+    date = a.date or datetime.datetime.fromtimestamp(os.path.getmtime(a.trace)).date().isoformat()
+    d, rnd = new_run_dir(root, date, a.name, a.mesh)
+    j = lambda *p: os.path.join(d, *p)  # noqa: E731
+    info = {
+        "nocrun_version": VERSION, "run": os.path.basename(d), "dir": d, "name": a.name,
+        "round": rnd, "app": a.app or a.name[:1].upper() + a.name[1:],
+        "program": a.program, "mesh": a.mesh, "build_id": a.build_id, "defines": a.define,
+        "window": a.window, "imported": True,
+        "imported_from": os.path.dirname(os.path.abspath(a.trace)),
+        "started": a.date or "", "note": a.note, "git": git_info(), "host": socket.gethostname(),
+        "trace_desc": "imported", "rerun": "(imported run)",
+    }
+    save_run(d, info)
+    if a.trace.endswith(".gz"):
+        shutil.copy(a.trace, j("trace.csv.gz"))
+    else:
+        with open(a.trace, "rb") as fi, gzip.open(j("trace.csv.gz"), "wb", compresslevel=6) as fo:
+            shutil.copyfileobj(fi, fo, 1 << 20)
+    if a.uart:
+        shutil.copy(a.uart, j("fake_uart.log"))
+    if a.sims_log:
+        # scanned in place (it can be huge); finish() writes sims_summary.log
+        os.symlink(os.path.abspath(a.sims_log), j("sims.log"))
+    args = argparse.Namespace(keep_logs=False, no_analysis=False)
+    # finish() deletes sims.log in the run folder: here that's only our symlink
+    finish_one(d, args)
+    if os.path.exists(j("fake_uart.log")):
+        os.remove(j("fake_uart.log"))
+    print("imported -> %s" % d)
+
+
+# ----------------------------------------------------------------------------- status / list
+
+def read_index(root):
+    p = os.path.join(root, "runs.csv")
+    if not os.path.exists(p):
+        return []
+    with open(p) as f:
+        return list(csv.DictReader(f))
+
+
+def table(rows, cols):
+    if not rows:
+        print("(none)")
+        return
+    w = {c: max(len(c), max(len(str(r.get(c, "") or "")) for r in rows)) for c in cols}
+    print("  ".join(c.ljust(w[c]) for c in cols))
+    for r in rows:
+        print("  ".join(str(r.get(c, "") or "").ljust(w[c]) for c in cols))
+
+
+def last_trace_cycle(d):
+    p = os.path.join(d, "trace.csv")
+    if not os.path.exists(p) or os.path.getsize(p) < 100:
+        return None
+    with open(p, "rb") as f:
+        f.seek(max(0, os.path.getsize(p) - 4096))
+        lines = f.read().decode(errors="replace").splitlines()
+    for line in reversed(lines):
+        if line[:1].isdigit():
+            return int(line.split(",")[0])
+    return None
+
+
+def cmd_status(a):
+    root = runs_root(a)
+    running = []
+    for d in sorted(glob.glob(os.path.join(root, "*_r*"))):
+        pidf = os.path.join(d, "job.pid")
+        if not os.path.exists(pidf):
+            continue
+        try:
+            pid = int(open(pidf).read().strip())
+            os.kill(pid, 0)
+            alive = True
+        except (ValueError, OSError):
+            alive = False
+        i = load_run(d)
+        lc = last_trace_cycle(d)
+        running.append({"run": i["run"], "state": "running" if alive else "STOPPED (job died; nocrun finish it)",
+                        "started": i.get("started"), "trace up to cycle": lc if lc is not None else "",
+                        "sims.log MB": mb(os.path.join(d, "sims.log")) or ""})
+    print("== in progress (%s)" % root)
+    table(running, ["run", "state", "started", "trace up to cycle", "sims.log MB"])
+    print()
+    print("== last finished")
+    table(read_index(root)[-a.n:], ["run", "status", "sim_cycles", "roi_cycles_max", "num_errors",
+                                    "packets", "elapsed_s"])
+
+
+def cmd_list(a):
+    rows = read_index(runs_root(a))
+    if a.grep:
+        rows = [r for r in rows if any(a.grep in str(v) for v in r.values())]
+    table(rows[-a.n:] if a.n else rows,
+          ["run", "status", "build_id", "defines", "sim_cycles", "roi_cycles_max", "num_errors",
+           "packets", "load_flits_per_cycle", "trace_mb", "elapsed_s"])
+
+
+# ----------------------------------------------------------------------------- main
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="nocrun", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--runs-dir", help="runs folder (default $NOC_RUNS or ~/noc_runs)")
+    sub = ap.add_subparsers(dest="cmd")
+
+    s = sub.add_parser("start", help="start a run in a new folder")
+    s.add_argument("program", help="test program, e.g. parsec_blackscholes.c (found under piton/verif/diag)")
+    s.add_argument("-m", "--mesh", default="2x1", help="XxY tiles (default 2x1)")
+    s.add_argument("-b", "--build-id", help="model to run (default ariane_<mesh>)")
+    s.add_argument("-D", "--define", action="append", default=[], metavar="NAME[=VALUE]",
+                   help="compile-time define, repeatable: -D NUM_OPTIONS=16")
+    s.add_argument("--name", help="run name (default: program name without parsec_/aibench_)")
+    s.add_argument("--app", help="label in plot titles (default: the name, capitalized)")
+    s.add_argument("--note", help="free-text note saved in run_info.txt")
+    s.add_argument("-w", "--window", type=int, default=10000,
+                   help="window/bin size for the automatic analysis (default 10000)")
+    s.add_argument("--rtl-timeout", type=int,
+                   help="fail if a core finishes no instruction for this many cycles (default 20M; "
+                        "2e9 for models built before the pc_cmp fix, which would otherwise stop "
+                        "EVERY run at this many cycles). Linux runs: cores idle in WFI, use 2e9")
+    s.add_argument("--max-cycle", type=int, default=2000000000, help="hard limit on run length")
+    s.add_argument("--no-trace", action="store_true", help="don't record a NoC trace")
+    s.add_argument("--full-trace", action="store_true", help="trace the whole run, ignoring ROI markers")
+    s.add_argument("--trace-start", type=int, help="trace nothing before this cycle")
+    s.add_argument("--trace-stop", type=int, help="trace nothing from this cycle on")
+    s.add_argument("--sim-arg", action="append", default=[], metavar="+PLUSARG",
+                   help="extra run-time plusarg, repeatable")
+    s.add_argument("--sims-arg", action="append", default=[], metavar="-OPTION",
+                   help="extra sims option, repeatable (write as --sims-arg=-foo)")
+    s.add_argument("--finish-mask", help="default: every tile")
+    s.add_argument("--core", default="ariane", choices=["ariane", "sparc"])
+    s.add_argument("--keep-logs", action="store_true",
+                   help="keep sims.log and the instruction traces (gzipped, in logs/)")
+    s.add_argument("--save-at", type=int, metavar="CYCLE",
+                   help="save a checkpoint (checkpoint.vcs in the run folder) at this cycle; "
+                        "the run continues. Continue from it later with: nocrun restore RUN")
+    s.add_argument("--fg", action="store_true", help="run in this terminal and wait")
+
+    s = sub.add_parser("restore", help="continue a run from its checkpoint, in a new run folder")
+    s.add_argument("run", help="run folder (or a unique part of its name) that has checkpoint.vcs")
+    s.add_argument("--name", help="run name (default: the original's)")
+    s.add_argument("--app")
+    s.add_argument("--note")
+    s.add_argument("-w", "--window", type=int)
+    s.add_argument("--no-trace", action="store_true", help="don't pass a trace file name")
+    s.add_argument("--sim-arg", action="append", default=[], metavar="+PLUSARG",
+                   help="extra plusarg for the restored run, repeatable")
+    s.add_argument("--keep-logs", action="store_true")
+    s.add_argument("--fg", action="store_true")
+
+    s = sub.add_parser("finish", help="tidy up a run folder (automatic at the end of a run)")
+    s.add_argument("runs", nargs="+")
+    s.add_argument("--keep-logs", action="store_true")
+    s.add_argument("--no-analysis", action="store_true")
+
+    s = sub.add_parser("analyze", help="analyze runs at another window size -> RUN/analysis/w<N>")
+    s.add_argument("runs", nargs="+", help="run folders (or unique parts of their names)")
+    s.add_argument("-w", "--window", type=int, default=10000)
+    s.add_argument("--tag", help="output folder name under analysis/ (default w<N>)")
+
+    s = sub.add_parser("compare", help="analyze runs together -> runs/compare/...")
+    s.add_argument("runs", nargs="+")
+    s.add_argument("-w", "--window", type=int, default=10000)
+    s.add_argument("-o", "--out")
+
+    s = sub.add_parser("import", help="bring an existing trace (+ logs) into the runs layout")
+    s.add_argument("--name", required=True)
+    s.add_argument("--trace", required=True)
+    s.add_argument("--mesh", default="2x1")
+    s.add_argument("--uart", help="its fake_uart.log")
+    s.add_argument("--sims-log", help="its sims.log (only the important lines are kept)")
+    s.add_argument("--program")
+    s.add_argument("--build-id")
+    s.add_argument("-D", "--define", action="append", default=[])
+    s.add_argument("--date", help="YYYY-MM-DD (default: the trace file's date)")
+    s.add_argument("--app")
+    s.add_argument("--note")
+    s.add_argument("-w", "--window", type=int, default=10000)
+
+    s = sub.add_parser("status", help="runs in progress and the latest finished ones")
+    s.add_argument("-n", type=int, default=5)
+    s = sub.add_parser("list", help="the run index")
+    s.add_argument("-n", type=int, default=0)
+    s.add_argument("--grep", help="only rows containing this text")
+
+    # analyze/compare: anything after "--" goes to noctrace unchanged,
+    # e.g.  nocrun analyze RUN -w 5000 -- --noc 2 --signature-unit flits
+    argv = list(sys.argv[1:] if argv is None else argv)
+    extra = []
+    if "--" in argv:
+        k = argv.index("--")
+        argv, extra = argv[:k], argv[k + 1:]
+    a = ap.parse_args(argv)
+    a.noctrace_args = extra
+    if not a.cmd:
+        ap.print_help()
+        return
+    {"start": cmd_start, "finish": cmd_finish, "analyze": cmd_analyze, "compare": cmd_compare,
+     "import": cmd_import, "status": cmd_status, "list": cmd_list, "restore": cmd_restore}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    main()
