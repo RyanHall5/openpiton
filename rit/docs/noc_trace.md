@@ -27,6 +27,8 @@ Steps 1–2 are covered in [`rhel9_vcs_setup.md`](rhel9_vcs_setup.md).
 
 ---
 
+**Tip:** [`nocrun`](runs.md) does steps 4 and 5 for you, with each run in its own folder that nothing overwrites. The steps below are what it runs, by hand.
+
 ## Step 3: Build
 
 ```bash
@@ -197,6 +199,7 @@ Small summaries (`summary.json`, a few plots) are fine to commit when they back 
 |---|---|---|
 | No `noc_trace_mon: writing...` line, no CSV | Model built before the monitor existed, or `+noc_trace` missing | Check the model (Step 3) and rebuild if needed; add `-sim_run_args=+noc_trace` |
 | `noc_trace_mon: ERROR could not open ...` | Bad path or no write permission | Use a plain file name; run from `$PITON_ROOT/build` |
+| No CSV, but the `+noc_trace` run otherwise worked | The trace window never opened (ROI markers never reached, or `+noc_trace_start` past the end of the run) | Check `sims.log` for `window opened` and PASS/FAIL |
 | CSV has only the header | Run ended before any NoC traffic, or the run failed | Check `sims.log` for PASS/FAIL |
 | `No module named noctrace` | Env script not sourced | `source ~/openpiton/rit/setup/openpiton_env.sh` |
 | `No module named pandas` / `matplotlib` | Python packages missing | `bash rit/setup/install_deps.sh` (step 8) |

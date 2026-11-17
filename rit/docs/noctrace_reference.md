@@ -37,7 +37,7 @@ sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_wor
      -rtl_timeout 10000000 -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=hello_2x2_r1.csv
 ```
 
-When tracing starts, the run's output (and `sims.log`) shows `noc_trace_mon: writing flit trace to <NAME>`. If the file can't be opened, it shows `noc_trace_mon: ERROR could not open <NAME>, tracing disabled` and the simulation continues without a trace.
+The trace file is created when the window first opens: at cycle 0 without window options, at the ROI start with markers. The run's output (and `sims.log`) then shows `noc_trace_mon: writing flit trace to <NAME>`. **A run whose window never opens writes no file.** The name is read from `+noc_trace_file` at that moment, so a run restored from a checkpoint saved before the window opened writes its own trace in its own folder (see [`runs.md`](runs.md)). If the file can't be opened, the output shows `noc_trace_mon: ERROR could not open <NAME>, tracing disabled` and the simulation continues without a trace.
 
 ### Trace window
 

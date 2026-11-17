@@ -101,8 +101,8 @@ reg [8*256-1:0] trace_file;
 reg [63:0]      start_cycle;
 reg [63:0]      stop_cycle;
 reg             stop_set;
-reg [39:0]      roi_begin_pc;
-reg [39:0]      roi_end_pc;
+reg [63:0]      roi_begin_pc;   // sims passes 64-bit addresses; Ariane's PCs here are 40 bits
+reg [63:0]      roi_end_pc;
 reg             use_roi;        // a begin PC was given and +noc_trace_full wasn't
 reg             end_pc_set;
 reg             roi_on;         // between a begin-PC hit and an end-PC hit
@@ -125,8 +125,8 @@ initial begin
     start_cycle  = 64'd0;
     stop_cycle   = 64'd0;
     stop_set     = 1'b0;
-    roi_begin_pc = 40'd0;
-    roi_end_pc   = 40'd0;
+    roi_begin_pc = 64'd0;
+    roi_end_pc   = 64'd0;
     use_roi      = 1'b0;
     end_pc_set   = 1'b0;
     roi_on       = 1'b0;
@@ -137,8 +137,7 @@ initial begin
         print("    rem%d = 8'd0; open%d = 1'b0;" % (k, k))
 %>
     if ($test$plusargs("noc_trace")) begin
-        if (!$value$plusargs("noc_trace_file=%s", trace_file))
-            trace_file = "noc_trace.csv";
+        trace_on = 1'b1;
         if ($value$plusargs("noc_trace_start=%d", start_cycle))
             any_window_opt = 1'b1;
         if ($value$plusargs("noc_trace_stop=%d", stop_cycle)) begin
@@ -155,12 +154,32 @@ initial begin
         end
         if (use_roi)
             any_window_opt = 1'b1;
+        if (use_roi && end_pc_set)
+            $display("noc_trace_mon: window opens at ROI begin pc %0h, closes at ROI end pc %0h",
+                     roi_begin_pc[39:0], roi_end_pc[39:0]);
+        else if (use_roi)
+            $display("noc_trace_mon: window opens at ROI begin pc %0h, stays open to the end",
+                     roi_begin_pc[39:0]);
+        if (start_cycle != 0 || stop_set)
+            $display("noc_trace_mon: cycle limits start=%0d stop=%0d (stop used: %0d)",
+                     start_cycle, stop_cycle, stop_set);
+    end
+end
+
+// The trace file is opened when the window first opens, not at time 0. A run
+// saved to a checkpoint before its window opens then opens the file after the
+// restore, and the file name is read at that moment (so a restored run can be
+// given its own +noc_trace_file). Without window options that is cycle 0.
+task open_trace;
+    begin
+        if (!$value$plusargs("noc_trace_file=%s", trace_file))
+            trace_file = "noc_trace.csv";
         fd = $fopen(trace_file, "w");
         if (fd == 0) begin
             $display("noc_trace_mon: ERROR could not open %0s, tracing disabled", trace_file);
+            trace_on = 1'b0;
         end
         else begin
-            trace_on = 1'b1;
             $fdisplay(fd, "# noc_trace v1");
             $fdisplay(fd, "# source=openpiton noc_trace_mon");
             $fdisplay(fd, "# x_tiles=%0d y_tiles=%0d num_tiles=%0d",
@@ -169,21 +188,12 @@ initial begin
             // flags say which limits are in use (a value with its flag at 0 is unused)
             if (any_window_opt)
                 $fdisplay(fd, "# window_config start_cycle=%0d stop_set=%0d stop_cycle=%0d use_roi=%0d roi_begin_pc=0x%0h end_pc_set=%0d roi_end_pc=0x%0h",
-                          start_cycle, stop_set, stop_cycle, use_roi, roi_begin_pc, end_pc_set, roi_end_pc);
+                          start_cycle, stop_set, stop_cycle, use_roi, roi_begin_pc[39:0], end_pc_set, roi_end_pc[39:0]);
             $fdisplay(fd, "cycle,time,noc,x,y,dir,port,flit");
             $display("noc_trace_mon: writing flit trace to %0s", trace_file);
-            if (use_roi && end_pc_set)
-                $display("noc_trace_mon: window opens at ROI begin pc %0h, closes at ROI end pc %0h",
-                         roi_begin_pc, roi_end_pc);
-            else if (use_roi)
-                $display("noc_trace_mon: window opens at ROI begin pc %0h, stays open to the end",
-                         roi_begin_pc);
-            if (start_cycle != 0 || stop_set)
-                $display("noc_trace_mon: cycle limits start=%0d stop=%0d (stop used: %0d)",
-                         start_cycle, stop_cycle, stop_set);
         end
     end
-end
+endtask
 
 always @(posedge clk)
     cycle <= cycle + 64'd1;
@@ -197,8 +207,8 @@ always @(negedge clk) begin
     for t in range(PITON_NUM_TILES):
         print("`ifdef RTL_ARIANE%d" % t)
         print("        if (`ARIANE_CORE%d.piton_pc_vld) begin" % t)
-        print("            if (use_roi && (`ARIANE_CORE%d.piton_pc[39:0] == roi_begin_pc)) roi_begin_hit = 1'b1;" % t)
-        print("            if (end_pc_set && (`ARIANE_CORE%d.piton_pc[39:0] == roi_end_pc)) roi_end_hit = 1'b1;" % t)
+        print("            if (use_roi && (`ARIANE_CORE%d.piton_pc[39:0] == roi_begin_pc[39:0])) roi_begin_hit = 1'b1;" % t)
+        print("            if (end_pc_set && (`ARIANE_CORE%d.piton_pc[39:0] == roi_end_pc[39:0])) roi_end_hit = 1'b1;" % t)
         print("        end")
         print("`endif")
 %>
@@ -209,6 +219,8 @@ always @(negedge clk) begin
 
         // ---- is the window open this cycle? ----
         win_now = (cycle >= start_cycle) && (!stop_set || cycle < stop_cycle) && (!use_roi || roi_on);
+        if (win_now && fd == 0)
+            open_trace;
         // (a run with no window options is one window from cycle 0: nothing to note)
         if ((win_now != win) && any_window_opt) begin
             if (win_now)

@@ -1,0 +1,54 @@
+// rit_ckpt: save the whole simulation to a checkpoint file at a chosen cycle.
+//
+//   -sim_run_args=+rit_save_at=N            save at cycle N (chip-clock rising edges from time 0)
+//   -sim_run_args=+rit_save_name=FILE       checkpoint file name (default checkpoint.vcs, in the run dir)
+//
+// The run keeps going after saving, so the same run is also the reference for
+// checking a restore. Restore with:  simv -r FILE [+plusargs]
+// (rit/bin/nocrun does both: nocrun start ... --save-at N, then nocrun restore RUN).
+//
+// $save is a VCS system task. It writes the simulator's whole state, including
+// the C memory model behind the chipset (DPI), to FILE. That's several GB.
+// Open files: a file opened before the save may not be usable after a restore;
+// noc_trace_mon therefore opens its trace when its window first opens, so
+// checkpoint before the window and the trace is opened in the restored run.
+//
+// Testbench-only (never synthesized). Does nothing without +rit_save_at.
+// If a simulator rejects $save, build with -config_rtl=RIT_NO_CKPT to leave it out.
+
+module rit_ckpt (
+    input wire clk
+);
+
+reg [63:0]      cyc;
+reg [63:0]      save_at;
+reg             armed;
+reg [8*256-1:0] ckpt_name;
+
+initial begin
+    cyc   = 64'd0;
+    armed = 1'b0;
+    if ($value$plusargs("rit_save_at=%d", save_at)) begin
+        armed = 1'b1;
+        if (!$value$plusargs("rit_save_name=%s", ckpt_name))
+            ckpt_name = "checkpoint.vcs";
+        $display("rit_ckpt: will save checkpoint %0s at cycle %0d", ckpt_name, save_at);
+    end
+end
+
+always @(posedge clk) begin
+    cyc <= cyc + 64'd1;
+`ifndef VERILATOR
+`ifndef RIT_NO_CKPT
+    if (armed && cyc == save_at) begin
+        armed = 1'b0;      // also 0 in the restored copy, so it never saves twice
+        $display("rit_ckpt: saving checkpoint %0s at cycle %0d (time %0d)", ckpt_name, cyc, $time);
+        $save(ckpt_name);
+        // A restored run continues from here too.
+        $display("rit_ckpt: running on from the checkpoint at cycle %0d (time %0d)", cyc, $time);
+    end
+`endif
+`endif
+end
+
+endmodule

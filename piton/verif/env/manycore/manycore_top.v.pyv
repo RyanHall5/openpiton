@@ -559,6 +559,9 @@ system system(
     // MINIMAL_MONITORING so it also works in minimal-monitoring builds.
     noc_trace_mon noc_trace_mon (`CHIP_INT_CLK);
 
+    // Checkpoint at a chosen cycle (off unless run with +rit_save_at=N).
+    rit_ckpt rit_ckpt (`CHIP_INT_CLK);
+
 `endif // DISABLE_ALL_MONITORS
     // Alexey
     // UART monitor
