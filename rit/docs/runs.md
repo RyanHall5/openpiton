@@ -134,6 +134,20 @@ Each run has its own folder, so runs can go in parallel, all using the same mode
 - **VCS licenses:** each running simulation holds one, from a pool shared across RIT. If none is free, the run fails at startup with a license error. Don't take more than you need.
 - **The lab machine is shared:** check `nproc` and `uptime` and leave cores for others. Each run uses one core and about 4–8 GB of RAM.
 
+## Which VCS
+
+Two VCS versions are installed on the lab machines:
+
+| | VCS 2017.12 (default) | VCS W-2024.09 |
+|---|---|---|
+| where | `/tools/rhel6/synopsys/vcs_mx/current` | `/tools/synopsys-el9/vcs/W-2024.09` |
+| built for | RHEL 6 | EL9 (what the workstations run) |
+| needs | the three RHEL 9 workarounds (old `ld`, `pthread_yield` stub, patched UVM) | none |
+| checkpoints | **restore fails**: `Fatal error: glibc detected an invalid stdio handle`, even with address randomization off | to be tested |
+| select with | `source ~/openpiton/rit/setup/openpiton_env.sh` | `RIT_VCS=el9 source ~/openpiton/rit/setup/openpiton_env.sh` |
+
+Use a **new terminal** when switching: sourcing the env script twice in one shell keeps the old `PATH` entries. A model has to run under the VCS that built it. `pbuild` records the builder in `build/manycore/<build_id>/rit_vcs_home`, `nocrun` warns on a mismatch, and every `run_info.txt` shows the VCS used.
+
 ## The model for long runs
 
 Build the model with the current branch and `MINIMAL_MONITORING`:

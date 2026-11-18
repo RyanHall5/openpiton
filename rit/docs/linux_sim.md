@@ -43,6 +43,13 @@ OpenSBI and BBL both expect this. So a boot payload (OpenSBI `fw_payload` or BBL
 - A checkpoint is several GB.
 - Possibly much faster: OpenPiton also supports Verilator, a free simulator that's often several times faster than VCS on designs like this and needs no license. Worth measuring before committing to multi-day VCS boots.
 
+## Checkpoint findings (2026-11-17/18)
+
+- `$save` works with VCS 2017.12: `checkpoint.vcs` + `checkpoint.vcs.FILES/`, about 59 MB for the 2x1 bare-metal run (the simulator process uses ~150 MB). The run continues normally after saving.
+- **Restoring fails** with VCS 2017.12 on RHEL 9, within 3 seconds and before simulating a cycle: `Fatal error: glibc detected an invalid stdio handle`. Turning address randomization off for both runs (`setarch -R`, now automatic in `nocrun`) didn't change it. Likely cause: the checkpoint is a process image, and RHEL 9's glibc protects its internal pointers with a per-process random key (pointer mangling) and checks its file structures. A 2017 tool's restore can't satisfy that.
+- Next: build the model with VCS W-2024.09 (built for EL9; `RIT_VCS=el9`) and repeat the test.
+- If no VCS can restore: drop checkpoints from the plan. **One boot runs all the benchmarks back to back**, each in its own trace window. That needs nothing beyond the UART model. Other routes: Verilator's own save/restore (plus saving the C memory model ourselves), or a process checkpointer such as DMTCP.
+
 ## Needed from the board team (Parsa, Denis)
 
 - The boot payload: OpenSBI or BBL, with the kernel and root file system. As an ELF if possible, and how it was built (repo, branch, config), so it can be rebuilt with changes (init script, benchmarks).

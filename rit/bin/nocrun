@@ -134,6 +134,20 @@ def new_run_dir(root, date, name, mesh):
     return d, r
 
 
+def check_vcs(simv):
+    """Warn if the model was built by a different VCS than the one in this shell."""
+    rec = os.path.join(os.path.dirname(simv), "rit_vcs_home")
+    cur = os.environ.get("VCS_HOME", "")
+    if os.path.exists(rec):
+        built = open(rec).read().strip()
+        if built and cur and os.path.realpath(built) != os.path.realpath(cur):
+            print("warning: this model was built with VCS %s, but this shell has %s. "
+                  "Run it with the VCS that built it (RIT_VCS=el9 or not, when sourcing the env script)."
+                  % (built, cur))
+        return built
+    return None
+
+
 def find_program(program):
     if os.path.isfile(program):
         return os.path.abspath(program)
@@ -175,6 +189,7 @@ def render_info(i):
     kv("mesh", i.get("mesh"))
     kv("model (build_id)", i.get("build_id"))
     kv("model built", i.get("model_built"))
+    kv("VCS", i.get("vcs_home"))
     kv("defines", " ".join(i.get("defines", [])))
     kv("trace", i.get("trace_desc"))
     kv("git", "%s on %s%s" % (i["git"]["commit"], i["git"]["branch"],
@@ -401,6 +416,7 @@ def cmd_start(a):
         die("no model %s (looked for %s). Build it with:\n"
             "  pbuild -sys=manycore -x_tiles=%d -y_tiles=%d -build_id=%s -ariane"
             % (build_id, simv, x, y, build_id))
+    vcs_built = check_vcs(simv)
     prog_path = find_program(a.program)
     program = os.path.basename(prog_path)
     name = a.name or short_name(program)
@@ -473,7 +489,7 @@ def cmd_start(a):
         "nocrun_version": VERSION, "run": os.path.basename(d), "dir": d, "name": name,
         "round": rnd, "app": a.app or name[:1].upper() + name[1:], "program": program,
         "program_path": os.path.relpath(prog_path, REPO), "mesh": a.mesh, "tiles": ntiles,
-        "build_id": build_id,
+        "build_id": build_id, "vcs_home": os.environ.get("VCS_HOME"), "model_vcs": vcs_built,
         "model_built": datetime.datetime.fromtimestamp(os.path.getmtime(simv)).strftime("%Y-%m-%d %H:%M"),
         "defines": a.define, "trace_desc": trace_desc, "window": a.window,
         "keep_logs": a.keep_logs, "git": git_info(), "host": socket.gethostname(),
@@ -547,6 +563,7 @@ def cmd_restore(a):
     simv = os.path.join(model_dir, "manycore", si["build_id"], "simv")
     if not os.path.exists(simv):
         die("model %s is gone (%s); a checkpoint only restores into the simv that saved it" % (si["build_id"], simv))
+    check_vcs(simv)
     if not (si.get("checkpoint") or {}).get("aslr_off") and not a.aslr:
         print("warning: %s was saved with address randomization on (an older nocrun). Restoring it "
               "will most likely fail with 'invalid stdio handle'; make a new checkpoint." % ck)
@@ -564,6 +581,7 @@ def cmd_restore(a):
         "app": a.app or si.get("app") or name, "program": si.get("program"),
         "program_path": si.get("program_path"), "mesh": si["mesh"], "tiles": si.get("tiles", 1),
         "build_id": si["build_id"], "model_built": si.get("model_built"),
+        "vcs_home": os.environ.get("VCS_HOME"),
         "defines": si.get("defines", []), "window": a.window or si.get("window", 10000),
         "keep_logs": a.keep_logs, "git": git_info(), "host": socket.gethostname(),
         "started": now(), "note": a.note, "status": "running",
