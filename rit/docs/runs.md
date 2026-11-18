@@ -113,7 +113,8 @@ nocrun restore cktest_2x1_r1          # new run folder: continues from cycle 50,
 
 - `--save-at N` adds `+rit_save_at=N` to the run. The testbench module `rit_ckpt` (`piton/verif/env/manycore/rit_ckpt.v.pyv`) calls VCS's `$save` at cycle N, writing `checkpoint.vcs` into the run folder, **and the run keeps going**. So the same run is also the reference to check the restore against.
 - `nocrun restore RUN` makes a new run folder and runs `simv -r <checkpoint>` there. The restored run picks up at cycle N and runs to the end like the original.
-- A checkpoint is the size of the simulator's memory: several GB.
+- VCS writes `checkpoint.vcs` plus a folder `checkpoint.vcs.FILES/`; keep both. `run_info.txt` shows their total size.
+- **Address randomization (ASLR) is turned off for these runs** (`setarch -R`, only for that process; no root needed). A VCS checkpoint is an image of the simulator process, full of pointers into the C library. With ASLR on, the library loads at a different address when the checkpoint is restored, those pointers are wrong, and the restore dies at once with `Fatal error: glibc detected an invalid stdio handle`. That's what happened on the first try (2026-11-17). Both the saving run and the restore need it off, so checkpoints made before this change can't be restored.
 - **A checkpoint only works with the exact `simv` that saved it.** Rebuilding the model makes old checkpoints useless (`nocrun restore` warns).
 - **Files opened before the save** may not be usable after a restore. The NoC trace monitor opens its file when its window first opens, so save before the window opens (before the ROI) and the trace is opened fresh in the restored run, in the restored run's folder.
 

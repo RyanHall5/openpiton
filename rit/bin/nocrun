@@ -51,6 +51,14 @@ RIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.path.dirname(RIT)
 VERSION = 1
 
+# VCS checkpoints ($save / simv -r) are an image of the simulator process. With
+# address-space layout randomization (ASLR), the C library loads at a different
+# address in the restored process, every saved pointer into it is wrong, and the
+# restore dies with "Fatal error: glibc detected an invalid stdio handle". So both
+# the saving run and the restore run with ASLR off for that process only
+# (setarch -R; no root needed).
+NOASLR = "setarch $(uname -m) -R "
+
 RUNS_CSV_COLS = ["run", "date", "program", "mesh", "build_id", "defines", "status",
                  "sim_cycles", "roi_cycles_max", "roi_instructions_max", "num_errors",
                  "packets", "injected_flits", "load_flits_per_cycle", "trace_mb",
@@ -195,7 +203,8 @@ def render_info(i):
     ck = i.get("checkpoint") or {}
     if ck.get("at") is not None:
         kv("checkpoint", "%s at cycle %s%s" % (ck.get("file"), ck["at"],
-                                               (" (%s GB)" % ck["size_gb"]) if ck.get("size_gb") else
+                                               (" (%s MB with %s.FILES/)" % (ck["size_mb"], ck.get("file")))
+                                               if ck.get("size_mb") is not None else
                                                ("" if i.get("status") == "running" else " (NOT written: see sims_summary.log)")))
     kv("restored from", i.get("restored_from") and "%s (%s)" % (i["restored_from"], i.get("checkpoint_used")))
     L.append("")
@@ -469,7 +478,8 @@ def cmd_start(a):
         "defines": a.define, "trace_desc": trace_desc, "window": a.window,
         "keep_logs": a.keep_logs, "git": git_info(), "host": socket.gethostname(),
         "started": now(), "note": a.note, "status": "running",
-        "checkpoint": {"at": a.save_at, "file": "checkpoint.vcs"} if a.save_at is not None else None,
+        "checkpoint": ({"at": a.save_at, "file": "checkpoint.vcs", "aslr_off": not a.aslr}
+                       if a.save_at is not None else None),
         "sims_cmd": " ".join(shlex.quote(s) for s in sims),
         "rerun": " ".join(shlex.quote(s) for s in rerun),
     }
@@ -477,8 +487,9 @@ def cmd_start(a):
 
     launch(d, info, a, ntiles,
            "# sims copies its output into sims.log itself; keep only the tail of the console copy\n"
-           "{timev}%s 2>&1 | tail -n 2000 > sims_console_tail.log\n"
-           "echo \"${{PIPESTATUS[0]}}\" > sims_exit_status" % info["sims_cmd"])
+           "{timev}%s%s 2>&1 | tail -n 2000 > sims_console_tail.log\n"
+           "echo \"${{PIPESTATUS[0]}}\" > sims_exit_status"
+           % (NOASLR if (a.save_at is not None and not a.aslr) else "", info["sims_cmd"]))
 
 
 def launch(d, info, a, ntiles, run_lines):
@@ -536,6 +547,9 @@ def cmd_restore(a):
     simv = os.path.join(model_dir, "manycore", si["build_id"], "simv")
     if not os.path.exists(simv):
         die("model %s is gone (%s); a checkpoint only restores into the simv that saved it" % (si["build_id"], simv))
+    if not (si.get("checkpoint") or {}).get("aslr_off") and not a.aslr:
+        print("warning: %s was saved with address randomization on (an older nocrun). Restoring it "
+              "will most likely fail with 'invalid stdio handle'; make a new checkpoint." % ck)
     if os.path.getmtime(simv) > os.path.getmtime(ck):
         print("warning: model %s was rebuilt after this checkpoint was saved; the restore will "
               "probably fail. A checkpoint only works with the exact simv that wrote it." % si["build_id"])
@@ -562,7 +576,8 @@ def cmd_restore(a):
     if os.path.isdir(os.path.join(src, "program")):
         shutil.copytree(os.path.join(src, "program"), os.path.join(d, "program"))
     launch(d, info, a, info["tiles"],
-           "{timev}%s > sims.log 2>&1\necho $? > sims_exit_status" % info["sims_cmd"])
+           "{timev}%s%s > sims.log 2>&1\necho $? > sims_exit_status"
+           % ("" if a.aslr else NOASLR, info["sims_cmd"]))
 
 
 # ----------------------------------------------------------------------------- finish
@@ -640,7 +655,10 @@ def finish_one(d, a):
 
     ck = (i.get("checkpoint") or {}).get("file")
     if ck and os.path.exists(j(ck)):
-        i["checkpoint"]["size_gb"] = round(os.path.getsize(j(ck)) / 1e9, 2)
+        n = os.path.getsize(j(ck))
+        for base, _, files in os.walk(j(ck + ".FILES")):
+            n += sum(os.path.getsize(os.path.join(base, f)) for f in files)
+        i["checkpoint"]["size_mb"] = round(n / 1e6, 1)
     i["finished"] = now()
     save_run(d, i)
 
@@ -876,6 +894,8 @@ def main(argv=None):
     s.add_argument("--save-at", type=int, metavar="CYCLE",
                    help="save a checkpoint (checkpoint.vcs in the run folder) at this cycle; "
                         "the run continues. Continue from it later with: nocrun restore RUN")
+    s.add_argument("--aslr", action="store_true",
+                   help="with --save-at: leave address randomization on (checkpoints then can't be restored)")
     s.add_argument("--fg", action="store_true", help="run in this terminal and wait")
 
     s = sub.add_parser("restore", help="continue a run from its checkpoint, in a new run folder")
@@ -888,6 +908,7 @@ def main(argv=None):
     s.add_argument("--sim-arg", action="append", default=[], metavar="+PLUSARG",
                    help="extra plusarg for the restored run, repeatable")
     s.add_argument("--keep-logs", action="store_true")
+    s.add_argument("--aslr", action="store_true", help="leave address randomization on")
     s.add_argument("--fg", action="store_true")
 
     s = sub.add_parser("finish", help="tidy up a run folder (automatic at the end of a run)")

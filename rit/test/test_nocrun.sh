@@ -87,8 +87,10 @@ check "list and status run" "true"
 $N start parsec_blackscholes.c --name ckpt --save-at 50000 --fg > /dev/null
 RC=$(ls -d "$NOC_RUNS"/*_ckpt_2x1_r1)
 check "--save-at passes the plusargs and the checkpoint is kept" "grep -q -- '+rit_save_at=50000' '$RC/job.sh' && [ -f '$RC/checkpoint.vcs' ] && grep -q 'checkpoint: *checkpoint.vcs at cycle 50000' '$RC/run_info.txt'"
+check "--save-at runs with address randomization off" "grep -q 'setarch .* -R sims' '$RC/job.sh' && grep -q 'MB with checkpoint.vcs.FILES' '$RC/run_info.txt'"
 $N restore ckpt_2x1_r1 --fg > /dev/null
 RR=$(ls -d "$NOC_RUNS"/*_ckpt_2x1_r2)
+check "restore runs with address randomization off" "grep -q 'setarch .* -R .*simv -r' '$RR/job.sh'"
 check "restore: new folder, simv -r, PASS, trace analyzed, origin recorded" "grep -q 'simv -r .*checkpoint.vcs +noc_trace_file=trace.csv' '$RR/job.sh' && grep -q 'status: *PASS' '$RR/run_info.txt' && grep -q 'restored from: *[0-9-]*_ckpt_2x1_r1' '$RR/run_info.txt' && [ -f '$RR/analysis/w10000/summary.txt' ] && [ -f '$RR/program/diag.c' ]"
 
 # detached start: returns at once, job finishes on its own
