@@ -36,9 +36,9 @@ The run folder is named `<date>_<name>_<mesh>_r<N>`. The name defaults to the pr
 ### Start a run
 
 ```bash
-nocrun start parsec_blackscholes.c -b ariane_2x1_v2                    # simsmall, 1 run
-nocrun start parsec_blackscholes.c -b ariane_2x1_v2 -D NUM_OPTIONS=16  # smoke test
-nocrun start aibench_conv2d.c -b ariane_2x1_v2 -D IMG_H=64 -D IMG_W=64 --note "size test"
+nocrun start parsec_blackscholes.c -b ariane_2x1_el9                    # simsmall, 1 run
+nocrun start parsec_blackscholes.c -b ariane_2x1_el9 -D NUM_OPTIONS=16  # smoke test
+nocrun start aibench_conv2d.c -b ariane_2x1_el9 -D IMG_H=64 -D IMG_W=64 --note "size test"
 ```
 
 It prints the run folder and returns right away. The run carries on in the background, **safe to log out**: it's started in its own session (`setsid`), so closing your SSH session can't send it the hang-up signal that killed the second conv2d run. Add `--fg` to run in your terminal and wait.
@@ -107,7 +107,7 @@ Creates a run folder (dated from the trace file), compresses the trace, keeps on
 A checkpoint is the simulator's entire state written to a file at one cycle: every register and memory in the chip, and the C memory model behind it. Continuing from it skips everything before that cycle. That's what makes Linux runs practical: boot once (days), save, then start every benchmark from the booted state.
 
 ```bash
-nocrun start parsec_blackscholes.c -b ariane_2x1_v2 -D NUM_OPTIONS=64 --name cktest --save-at 50000
+nocrun start parsec_blackscholes.c -b ariane_2x1_el9 -D NUM_OPTIONS=64 --name cktest --save-at 50000
 nocrun restore cktest_2x1_r1          # new run folder: continues from cycle 50,000
 ```
 
@@ -138,14 +138,14 @@ Each run has its own folder, so runs can go in parallel, all using the same mode
 
 Two VCS versions are installed on the lab machines:
 
-| | VCS 2017.12 (default) | VCS V-2023.12-SP2-1 |
+| | VCS 2017.12 | VCS V-2023.12-SP2-1 (default) |
 |---|---|---|
 | where | `/tools/rhel6/synopsys/vcs_mx/current` | `/tools/synopsys-el9/vcs/V-2023.12-SP2-1-T-20240806` (W-2024.09 is there too but incomplete: no `bin/`) |
 | built for | RHEL 6 | EL9 (what the workstations run) |
 | needs | the three RHEL 9 workarounds (old `ld`, `pthread_yield` stub, patched UVM) | none |
 | checkpoints | **restore fails**: `Fatal error: glibc detected an invalid stdio handle`, even with address randomization off | **work**: the restored run's trace is byte-for-byte identical to the original's |
 | results | blackscholes smoke test: 176,671 cycles | identical: 176,671 cycles, same speed |
-| select with | `source ~/openpiton/rit/setup/openpiton_env.sh` | `RIT_VCS=el9 source ~/openpiton/rit/setup/openpiton_env.sh` |
+| select with | `RIT_VCS=2017 source ~/openpiton/rit/setup/openpiton_env.sh` | `source ~/openpiton/rit/setup/openpiton_env.sh` |
 
 Use a **new terminal** when switching: sourcing the env script twice in one shell keeps the old `PATH` entries. A model has to run under the VCS that built it. `pbuild` records the builder in `build/manycore/<build_id>/rit_vcs_home`, `nocrun` warns on a mismatch, and every `run_info.txt` shows the VCS used.
 
@@ -153,7 +153,7 @@ Use a **new terminal** when switching: sourcing the env script twice in one shel
 
 Build the model with the current branch and `MINIMAL_MONITORING`:
 ```bash
-pbuild -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1_v2 -ariane -config_rtl=MINIMAL_MONITORING
+pbuild -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1_el9 -ariane -config_rtl=MINIMAL_MONITORING
 ```
 
 - `MINIMAL_MONITORING` turns off the testbench monitors that print every L2 and L1.5 transaction into `sims.log` (`Control signals:`, `L15_MON`, ...). The NoC trace monitor and pass/fail detection still work.

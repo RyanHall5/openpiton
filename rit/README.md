@@ -6,7 +6,7 @@ This branch (`ryan-noc-research`) is [Princeton's OpenPiton](https://github.com/
 rit/
 ├── README.md                  you are here
 ├── setup/
-│   ├── install_deps.sh        one-time install of toolchain + RHEL 9 / VCS 2017 fixes
+│   ├── install_deps.sh        one-time install of the toolchain (+ VCS 2017 fixes with RIT_VCS=2017)
 │   ├── openpiton_env.sh       source in every terminal (defines pbuild)
 │   └── pthread_yield.c        source for VCS fix 2
 ├── docs/

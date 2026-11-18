@@ -1,4 +1,4 @@
-# OpenPiton + Ariane on RIT RHEL 9 Lab Workstations (VCS 2017.12)
+# OpenPiton + Ariane on RIT RHEL 9 Lab Workstations
 
 How to build and run OpenPiton's Ariane (RISC-V) simulation model with VCS on an RIT ICE Lab workstation running **RHEL 9**, starting from a fresh account.
 
@@ -8,7 +8,7 @@ How to build and run OpenPiton's Ariane (RISC-V) simulation model with VCS on an
 git clone git@github.com:RyanHall5/openpiton.git ~/openpiton   # or the https URL
 cd ~/openpiton && git checkout ryan-noc-research
 module load synopsys
-bash rit/setup/install_deps.sh        # once; ~20 min, mostly building ld 2.30
+bash rit/setup/install_deps.sh        # once; a few minutes
 source rit/setup/openpiton_env.sh     # every new terminal
 cd $PITON_ROOT/build
 pbuild -sys=manycore -x_tiles=1 -y_tiles=1 -build_id=ariane_1x1 -ariane 2>&1 | tee build.log
@@ -22,9 +22,25 @@ Copy-paste templates for these and other common commands are in [`command_templa
 
 ---
 
-## Why this is needed
+## Which VCS
 
-The lab's VCS is **N-2017.12-SP2**, built for RHEL 6 (`/tools/rhel6/synopsys/vcs_mx/current`). The workstations run RHEL 9 (binutils 2.35, glibc 2.34, GCC 11). That OS is far newer than this VCS supports, and it breaks the VCS build in three separate ways. OpenPiton itself is fine. The fixes work around the OS mismatch without root access or changes to the lab's VCS install.
+The lab workstations have two VCS versions, and the env script picks one:
+
+| | **VCS V-2023.12-SP2-1** (default since 2026-11-18) | VCS N-2017.12-SP2 |
+|---|---|---|
+| where | `/tools/synopsys-el9/vcs/V-2023.12-SP2-1-T-20240806` | `/tools/rhel6/synopsys/vcs_mx/current` (what `module load synopsys` gives) |
+| built for | EL9: the OS the workstations run | RHEL 6 |
+| setup | nothing extra | the three workarounds below |
+| checkpoints (save/restore) | work | restore fails on RHEL 9 |
+| select | `source rit/setup/openpiton_env.sh` | `RIT_VCS=2017 source rit/setup/openpiton_env.sh`, and `RIT_VCS=2017 bash rit/setup/install_deps.sh` once for the workarounds |
+
+Both simulate the design identically: the same test takes exactly the same number of cycles on each. **A model must run under the VCS that built it**, so models built before the switch need `RIT_VCS=2017` (or a rebuild). `pbuild` records the VCS in `build/manycore/<build_id>/rit_vcs_home`, and `nocrun` warns on a mismatch. Switch in a **new terminal**: sourcing the env script twice in one shell keeps the old `PATH` entries. (`/tools/synopsys-el9/vcs/W-2024.09` exists too but is an incomplete install, with no `bin/`.)
+
+The rest of this section is only about VCS 2017.
+
+## Why VCS 2017 needs workarounds
+
+The lab's older VCS is **N-2017.12-SP2**, built for RHEL 6 (`/tools/rhel6/synopsys/vcs_mx/current`). The workstations run RHEL 9 (binutils 2.35, glibc 2.34, GCC 11). That OS is far newer than this VCS supports, and it breaks the VCS build in three separate ways. OpenPiton itself is fine. The fixes work around the OS mismatch without root access or changes to the lab's VCS install.
 
 | # | Symptom | Cause | Fix |
 |---|---------|-------|-----|

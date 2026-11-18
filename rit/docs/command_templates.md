@@ -37,6 +37,8 @@ source <repo>/rit/setup/openpiton_env.sh
 source ~/openpiton/rit/setup/openpiton_env.sh
 ```
 
+This uses VCS V-2023.12 (the EL9 build). For a model built with the old VCS 2017, open a new terminal and use `RIT_VCS=2017 source ~/openpiton/rit/setup/openpiton_env.sh` instead ([`rhel9_vcs_setup.md`](rhel9_vcs_setup.md#which-vcs)).
+
 ### Get the latest code
 
 ```bash
@@ -133,8 +135,8 @@ nocrun restore <run>                            # continue a run from its checkp
 
 ```bash
 # examples
-nocrun start parsec_blackscholes.c -b ariane_2x1_v2 -D NUM_OPTIONS=16 --name bs16 --fg   # smoke test, wait for it
-nocrun start aibench_conv2d.c -b ariane_2x1_v2                                           # full run, background
+nocrun start parsec_blackscholes.c -b ariane_2x1_el9 -D NUM_OPTIONS=16 --name bs16 --fg   # smoke test, wait for it
+nocrun start aibench_conv2d.c -b ariane_2x1_el9                                           # full run, background
 nocrun analyze conv2d_2x1_r1 -w 80000
 ```
 

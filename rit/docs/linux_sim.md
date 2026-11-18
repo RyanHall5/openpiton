@@ -47,7 +47,7 @@ OpenSBI and BBL both expect this. So a boot payload (OpenSBI `fw_payload` or BBL
 
 - `$save` works with VCS 2017.12: `checkpoint.vcs` + `checkpoint.vcs.FILES/`, about 59 MB for the 2x1 bare-metal run (the simulator process uses ~150 MB). The run continues normally after saving.
 - **Restoring fails** with VCS 2017.12 on RHEL 9, within 3 seconds and before simulating a cycle: `Fatal error: glibc detected an invalid stdio handle`. Turning address randomization off for both runs (`setarch -R`, now automatic in `nocrun`) didn't change it. Likely cause: the checkpoint is a process image, and RHEL 9's glibc protects its internal pointers with a per-process random key (pointer mangling) and checks its file structures. A 2017 tool's restore can't satisfy that.
-- **With VCS V-2023.12-SP2-1 (built for EL9; `RIT_VCS=el9`) checkpoints work** (2026-11-18, model `ariane_2x1_el9`):
+- **With VCS V-2023.12-SP2-1 (built for EL9; now the default) checkpoints work** (2026-11-18, model `ariane_2x1_el9`):
   - Same design, same results as VCS 2017: the blackscholes smoke test takes exactly 176,671 cycles on both, at about the same speed (~4,500 cycles/s).
   - `--save-at 50000` wrote a 95 MB checkpoint. The restored run passed, with the same ROI cycle counts, and **its NoC trace is byte-for-byte identical** to the original run's. So the C memory model's contents survive a save and restore.
   - VCS reopens files on restore (`Info: [VCS_SAVE_RESTORE_INFO] Restored .../fake_uart.log`), in the restored run's folder.

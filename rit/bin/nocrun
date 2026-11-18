@@ -142,9 +142,13 @@ def check_vcs(simv):
         built = open(rec).read().strip()
         if built and cur and os.path.realpath(built) != os.path.realpath(cur):
             print("warning: this model was built with VCS %s, but this shell has %s. "
-                  "Run it with the VCS that built it (RIT_VCS=el9 or not, when sourcing the env script)."
-                  % (built, cur))
+                  "Run it under the VCS that built it: for VCS 2017, open a new terminal and "
+                  "source the env script with RIT_VCS=2017 in front." % (built, cur))
         return built
+    if "rhel6" not in cur:
+        print("warning: no record of which VCS built %s (models built before 2026-11-18 have none, "
+              "and used VCS 2017). If this run fails at startup, run it under VCS 2017 "
+              "(RIT_VCS=2017 source ... in a new terminal) or rebuild the model." % os.path.dirname(simv))
     return None
 
 

@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # One-time setup of everything OpenPiton + Ariane needs on an RIT RHEL 9 lab
-# workstation with the lab's VCS N-2017.12. No root needed; everything goes in
-# your home directory. Safe to re-run: finished steps are skipped.
+# workstation. No root needed; everything goes in your home directory. Safe to
+# re-run: finished steps are skipped.
 #
 #   bash ~/openpiton/rit/setup/install_deps.sh
+#
+# Steps 5-7 are only for the old VCS 2017.12 (the default VCS, the EL9 build in
+# /tools/synopsys-el9, doesn't need them). To install them too:
+#   RIT_VCS=2017 bash ~/openpiton/rit/setup/install_deps.sh
 #
 # Steps (see rit/docs/rhel9_vcs_setup.md for why each exists):
 #   1. Ariane submodule
@@ -69,6 +73,10 @@ else
   "$HOME/perl5/bin/cpanm" -l "$HOME/perl5" Bit::Vector
 fi
 
+# ---------------------------------------------------------------- 5-7
+if [ "${RIT_VCS:-el9}" != "2017" ]; then
+  say "5-7/8 VCS 2017 workarounds: skipped (not needed for the default EL9 VCS; RIT_VCS=2017 to install)"
+else
 # ---------------------------------------------------------------- 5
 say "5/8 Fix 1: GNU ld 2.30 (takes ~15 minutes the first time)"
 if [ -x "$HOME/opt/binutils-2.30/bin/ld" ]; then
@@ -93,13 +101,13 @@ echo "   built ~/opt/vcs_compat/pthread_yield.o"
 
 # ---------------------------------------------------------------- 7
 say "7/8 Fix 3: patched UVM copy"
-VCS_HOME=${VCS_HOME:-/tools/rhel6/synopsys/vcs_mx/current}
+VCS2017=/tools/rhel6/synopsys/vcs_mx/current
 if [ -d "$HOME/opt/uvm-1.1/dpi" ]; then
   skip "~/opt/uvm-1.1"
-elif [ -d "$VCS_HOME/etc/uvm-1.1" ]; then
-  cp -r "$VCS_HOME/etc/uvm-1.1" "$HOME/opt/uvm-1.1"
+elif [ -d "$VCS2017/etc/uvm-1.1" ]; then
+  cp -r "$VCS2017/etc/uvm-1.1" "$HOME/opt/uvm-1.1"
 else
-  echo "   can't find $VCS_HOME/etc/uvm-1.1 (run 'module load synopsys' or set VCS_HOME)"; exit 1
+  echo "   can't find $VCS2017/etc/uvm-1.1"; exit 1
 fi
 # Replace curly quotes (UTF-8 bytes) that GCC 11 rejects. Byte-exact, so it
 # doesn't depend on the terminal's locale.
@@ -110,6 +118,7 @@ if LC_ALL=C grep -rlq $'\xe2\x80' "$HOME/opt/uvm-1.1/dpi"; then
 else
   echo "   ~/opt/uvm-1.1/dpi is clean"
 fi
+fi   # RIT_VCS=2017
 
 # ---------------------------------------------------------------- 8
 say "8/8 Python packages for noctrace"

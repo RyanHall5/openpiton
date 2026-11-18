@@ -38,7 +38,7 @@ Use `nocrun` ([`../docs/runs.md`](../docs/runs.md)): every run gets its own fold
 ```bash
 source ~/openpiton/rit/setup/openpiton_env.sh
 cd $PITON_ROOT/build
-pbuild -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1_v2 -ariane -config_rtl=MINIMAL_MONITORING 2>&1 | tee build_ariane_2x1_v2.log
+pbuild -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1_el9 -ariane -config_rtl=MINIMAL_MONITORING 2>&1 | tee build_ariane_2x1_el9.log
 ```
 
 `MINIMAL_MONITORING` stops the testbench from printing every cache transaction into `sims.log`, which otherwise reached 1.5 GB for a 10M-cycle run. Use a new `-build_id` when runs are still using the old model.
@@ -48,8 +48,8 @@ pbuild -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1_v2 -ariane -conf
 Tiny inputs, to check everything compiles, links and passes before the long runs:
 
 ```bash
-nocrun start parsec_blackscholes.c -b ariane_2x1_v2 -D NUM_OPTIONS=16 --name bs16 --fg
-nocrun start aibench_conv2d.c -b ariane_2x1_v2 -D IMG_H=32 -D IMG_W=32 --name conv32 --fg
+nocrun start parsec_blackscholes.c -b ariane_2x1_el9 -D NUM_OPTIONS=16 --name bs16 --fg
+nocrun start aibench_conv2d.c -b ariane_2x1_el9 -D IMG_H=32 -D IMG_W=32 --name conv32 --fg
 ```
 
 **Pass looks like:** `status: PASS` and `num errors: 0` in the `run_info.txt` printed at the end. `sims_summary.log` in the run folder has `NoC trace window marker ...`, `noc_trace_mon: window opened at cycle N` and `closed at cycle M`. If the compile fails, `program/rv64_cc.log` has the compiler output.
@@ -57,8 +57,8 @@ nocrun start aibench_conv2d.c -b ariane_2x1_v2 -D IMG_H=32 -D IMG_W=32 --name co
 ### 3. Full runs
 
 ```bash
-nocrun start parsec_blackscholes.c -b ariane_2x1_v2        # PARSEC simsmall (4096 options), 1 run
-nocrun start aibench_conv2d.c -b ariane_2x1_v2             # one 227x227 image
+nocrun start parsec_blackscholes.c -b ariane_2x1_el9        # PARSEC simsmall (4096 options), 1 run
+nocrun start aibench_conv2d.c -b ariane_2x1_el9             # one 227x227 image
 nocrun status                                              # check on them
 ```
 

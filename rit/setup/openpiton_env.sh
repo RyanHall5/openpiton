@@ -3,13 +3,16 @@
 # Source this in every new terminal before using vcs / sims / noctrace:
 #     source ~/openpiton/rit/setup/openpiton_env.sh
 #
-# Which VCS: by default VCS 2017.12 (/tools/rhel6, built for RHEL 6; needs the
-# three RHEL 9 workarounds below). For the newer VCS built for EL9, which needs
-# none of them, set RIT_VCS first, in a NEW terminal:
-#     RIT_VCS=el9 source ~/openpiton/rit/setup/openpiton_env.sh
-# (RIT_VCS_VERSION picks the release, default V-2023.12-SP2-1-T-20240806; others
-# are in /tools/synopsys-el9/vcs/. W-2024.09 there is incomplete: no bin/.) A model must be run with the VCS that built it;
-# pbuild records which one in build/manycore/<build_id>/rit_vcs_home.
+# Which VCS: by default VCS V-2023.12 from /tools/synopsys-el9 (built for EL9,
+# the OS the workstations run; needs no workarounds). The older VCS 2017.12
+# (/tools/rhel6, built for RHEL 6) is still there for models built with it.
+# It needs three RHEL 9 workarounds (below) and its checkpoints can't be
+# restored. To use it, in a NEW terminal:
+#     RIT_VCS=2017 source ~/openpiton/rit/setup/openpiton_env.sh
+# RIT_VCS_VERSION picks another EL9 release (in /tools/synopsys-el9/vcs/;
+# W-2024.09 there is incomplete: no bin/).
+# A model must be run with the VCS that built it. pbuild records which one in
+# build/manycore/<build_id>/rit_vcs_home; nocrun checks it.
 # (adjust the path if you cloned somewhere else; PITON_ROOT is worked out from
 # where this file lives, so the clone can be anywhere).
 #
@@ -29,11 +32,11 @@ unset _rit_setup_dir
 export ARIANE_ROOT=$PITON_ROOT/piton/design/chip/tile/ariane
 export RISCV=$HOME/tools/riscv64-unknown-elf-gcc-8.3.0-2019.08.0-x86_64-linux-centos6
 export PATH=$HOME/.local/bin:$RISCV/bin:$PATH
-if [ "${RIT_VCS:-}" = "el9" ]; then
+if [ "${RIT_VCS:-el9}" != "2017" ]; then
     export VCS_HOME=/tools/synopsys-el9/vcs/${RIT_VCS_VERSION:-V-2023.12-SP2-1-T-20240806}
     if [ ! -x "$VCS_HOME/bin/vcs" ]; then
         echo "openpiton_env: ERROR $VCS_HOME/bin/vcs doesn't exist (incomplete install?)." >&2
-        echo "  Complete versions: $(cd /tools/synopsys-el9/vcs && for v in *; do [ -x "$v/bin/vcs" ] && printf '%s ' "$v"; done)" >&2
+        [ -d /tools/synopsys-el9/vcs ] && echo "  Complete versions: $(cd /tools/synopsys-el9/vcs && for v in *; do [ -x "$v/bin/vcs" ] && printf '%s ' "$v"; done)" >&2
         echo "  Pick one with RIT_VCS_VERSION=<version>, in a new terminal." >&2
     fi
 else
@@ -44,12 +47,11 @@ fi
 
 source $PITON_ROOT/piton/piton_settings.bash
 
-if [ "${RIT_VCS:-}" = "el9" ]; then
+if [ "${RIT_VCS:-el9}" != "2017" ]; then
     # VCS built for EL9: no workarounds. Use its own UVM, the system linker.
     unset VCS_UVM_HOME
     unset PITON_VCS_FIX_ARGS
     _rit_vcs_fix_args=()
-    echo "openpiton_env: VCS $VCS_HOME (EL9 build, no RHEL 9 workarounds)"
 else
     # --- RHEL 9 workarounds for VCS 2017.12 (must stay at the end) ---
     export PATH=$HOME/ldshim:$PATH          # Fix 1: use GNU ld 2.30
@@ -63,6 +65,7 @@ else
     # Same fix arguments as one variable, for scripts that call sims directly:
     #   sims ... -vcs_build $PITON_VCS_FIX_ARGS
     export PITON_VCS_FIX_ARGS="${_rit_vcs_fix_args[*]}"
+    echo "openpiton_env: using VCS 2017.12 ($VCS_HOME) with the RHEL 9 workarounds"
 fi
 
 # pbuild: sims with -vcs_build (plus the fix arguments for VCS 2017). Takes the
