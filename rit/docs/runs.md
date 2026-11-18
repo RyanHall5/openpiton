@@ -143,7 +143,8 @@ Two VCS versions are installed on the lab machines:
 | where | `/tools/rhel6/synopsys/vcs_mx/current` | `/tools/synopsys-el9/vcs/V-2023.12-SP2-1-T-20240806` (W-2024.09 is there too but incomplete: no `bin/`) |
 | built for | RHEL 6 | EL9 (what the workstations run) |
 | needs | the three RHEL 9 workarounds (old `ld`, `pthread_yield` stub, patched UVM) | none |
-| checkpoints | **restore fails**: `Fatal error: glibc detected an invalid stdio handle`, even with address randomization off | to be tested |
+| checkpoints | **restore fails**: `Fatal error: glibc detected an invalid stdio handle`, even with address randomization off | **work**: the restored run's trace is byte-for-byte identical to the original's |
+| results | blackscholes smoke test: 176,671 cycles | identical: 176,671 cycles, same speed |
 | select with | `source ~/openpiton/rit/setup/openpiton_env.sh` | `RIT_VCS=el9 source ~/openpiton/rit/setup/openpiton_env.sh` |
 
 Use a **new terminal** when switching: sourcing the env script twice in one shell keeps the old `PATH` entries. A model has to run under the VCS that built it. `pbuild` records the builder in `build/manycore/<build_id>/rit_vcs_home`, `nocrun` warns on a mismatch, and every `run_info.txt` shows the VCS used.

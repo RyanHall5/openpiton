@@ -2,7 +2,7 @@
 
 Goal: boot the same Linux the Genesys2 board runs, inside the 2x1 VCS simulation, save the booted state to a checkpoint, then start benchmarks from that checkpoint as often as needed, with the NoC trace covering only the benchmark.
 
-Status (2026-11-17): planning. Run tooling, checkpoints and testbench fixes are in; the boot itself is waiting on the board's Linux image.
+Status (2026-11-18): run tooling, testbench fixes and **working checkpoints (VCS V-2023.12, EL9 build)** are in. The boot itself is waiting on the board's Linux image and on a UART model that works with Linux.
 
 ## What the simulation already provides
 
@@ -47,8 +47,12 @@ OpenSBI and BBL both expect this. So a boot payload (OpenSBI `fw_payload` or BBL
 
 - `$save` works with VCS 2017.12: `checkpoint.vcs` + `checkpoint.vcs.FILES/`, about 59 MB for the 2x1 bare-metal run (the simulator process uses ~150 MB). The run continues normally after saving.
 - **Restoring fails** with VCS 2017.12 on RHEL 9, within 3 seconds and before simulating a cycle: `Fatal error: glibc detected an invalid stdio handle`. Turning address randomization off for both runs (`setarch -R`, now automatic in `nocrun`) didn't change it. Likely cause: the checkpoint is a process image, and RHEL 9's glibc protects its internal pointers with a per-process random key (pointer mangling) and checks its file structures. A 2017 tool's restore can't satisfy that.
-- Next: build the model with VCS V-2023.12-SP2-1 (built for EL9; `RIT_VCS=el9`) and repeat the test.
-- If no VCS can restore: drop checkpoints from the plan. **One boot runs all the benchmarks back to back**, each in its own trace window. That needs nothing beyond the UART model. Other routes: Verilator's own save/restore (plus saving the C memory model ourselves), or a process checkpointer such as DMTCP.
+- **With VCS V-2023.12-SP2-1 (built for EL9; `RIT_VCS=el9`) checkpoints work** (2026-11-18, model `ariane_2x1_el9`):
+  - Same design, same results as VCS 2017: the blackscholes smoke test takes exactly 176,671 cycles on both, at about the same speed (~4,500 cycles/s).
+  - `--save-at 50000` wrote a 95 MB checkpoint. The restored run passed, with the same ROI cycle counts, and **its NoC trace is byte-for-byte identical** to the original run's. So the C memory model's contents survive a save and restore.
+  - VCS reopens files on restore (`Info: [VCS_SAVE_RESTORE_INFO] Restored .../fake_uart.log`), in the restored run's folder.
+  - It also needs none of the three RHEL 9 workarounds.
+- So the Linux plan keeps its checkpoint: boot once, save, restore for each benchmark. Fallback if something about Linux breaks it: one boot running all benchmarks back to back.
 
 ## Needed from the board team (Parsa, Denis)
 
