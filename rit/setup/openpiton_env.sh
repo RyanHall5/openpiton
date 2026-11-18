@@ -7,8 +7,8 @@
 # three RHEL 9 workarounds below). For the newer VCS built for EL9, which needs
 # none of them, set RIT_VCS first, in a NEW terminal:
 #     RIT_VCS=el9 source ~/openpiton/rit/setup/openpiton_env.sh
-# (RIT_VCS_VERSION picks the release, default W-2024.09; others are in
-# /tools/synopsys-el9/vcs/.) A model must be run with the VCS that built it;
+# (RIT_VCS_VERSION picks the release, default V-2023.12-SP2-1-T-20240806; others
+# are in /tools/synopsys-el9/vcs/. W-2024.09 there is incomplete: no bin/.) A model must be run with the VCS that built it;
 # pbuild records which one in build/manycore/<build_id>/rit_vcs_home.
 # (adjust the path if you cloned somewhere else; PITON_ROOT is worked out from
 # where this file lives, so the clone can be anywhere).
@@ -30,7 +30,12 @@ export ARIANE_ROOT=$PITON_ROOT/piton/design/chip/tile/ariane
 export RISCV=$HOME/tools/riscv64-unknown-elf-gcc-8.3.0-2019.08.0-x86_64-linux-centos6
 export PATH=$HOME/.local/bin:$RISCV/bin:$PATH
 if [ "${RIT_VCS:-}" = "el9" ]; then
-    export VCS_HOME=/tools/synopsys-el9/vcs/${RIT_VCS_VERSION:-W-2024.09}
+    export VCS_HOME=/tools/synopsys-el9/vcs/${RIT_VCS_VERSION:-V-2023.12-SP2-1-T-20240806}
+    if [ ! -x "$VCS_HOME/bin/vcs" ]; then
+        echo "openpiton_env: ERROR $VCS_HOME/bin/vcs doesn't exist (incomplete install?)." >&2
+        echo "  Complete versions: $(cd /tools/synopsys-el9/vcs && for v in *; do [ -x "$v/bin/vcs" ] && printf '%s ' "$v"; done)" >&2
+        echo "  Pick one with RIT_VCS_VERSION=<version>, in a new terminal." >&2
+    fi
 else
     export VCS_HOME=/tools/rhel6/synopsys/vcs_mx/current
 fi

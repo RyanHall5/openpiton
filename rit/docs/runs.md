@@ -138,9 +138,9 @@ Each run has its own folder, so runs can go in parallel, all using the same mode
 
 Two VCS versions are installed on the lab machines:
 
-| | VCS 2017.12 (default) | VCS W-2024.09 |
+| | VCS 2017.12 (default) | VCS V-2023.12-SP2-1 |
 |---|---|---|
-| where | `/tools/rhel6/synopsys/vcs_mx/current` | `/tools/synopsys-el9/vcs/W-2024.09` |
+| where | `/tools/rhel6/synopsys/vcs_mx/current` | `/tools/synopsys-el9/vcs/V-2023.12-SP2-1-T-20240806` (W-2024.09 is there too but incomplete: no `bin/`) |
 | built for | RHEL 6 | EL9 (what the workstations run) |
 | needs | the three RHEL 9 workarounds (old `ld`, `pthread_yield` stub, patched UVM) | none |
 | checkpoints | **restore fails**: `Fatal error: glibc detected an invalid stdio handle`, even with address randomization off | to be tested |
