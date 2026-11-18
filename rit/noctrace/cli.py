@@ -19,23 +19,13 @@ import pandas as pd
 
 from . import load_run, metrics
 
-EXAMPLES = """examples:
-  # analyze one trace with default settings
-  python3 -m noctrace hello_2x2.csv -o ~/noc_results
+EXAMPLES = """Normally run for you by nocrun: every run is analyzed when it ends, and
+  nocrun analyze RUN -w N [--tag TAG] [-- OPTIONS]
+re-analyzes it into RUN/analysis/<TAG>/, passing OPTIONS (any option above) on.
 
-  # flits per 10k-cycle window, per core and total, titled for a slide
-  python3 -m noctrace hello_2x2.csv --bin 10000 --window 10000 \\
-          --signature-unit flits --app hello_world --round 1 -o ~/noc_results
-
-  # compare three runs (one --app/--round per file, in file order)
-  python3 -m noctrace a.csv b.csv c.csv --app bs --app bs --app bs \\
-          --round 1 --round 2 --round 3 -o ~/noc_results
-
-  # only NoC2, only cycles 100k-500k
-  python3 -m noctrace run.csv --noc 2 --start 100000 --end 500000
-
-  # old sims.log from a run with +enable_router_mon
-  python3 -m noctrace sims.log --x-tiles 2 --y-tiles 2
+examples (after --):
+  nocrun analyze RUN -w 10000 --tag w10000_flits -- --signature-unit flits
+  nocrun analyze RUN -w 1000 --tag zoom -- --noc 2 --start 100000 --end 500000
 
 full reference: rit/docs/noctrace_reference.md
 """

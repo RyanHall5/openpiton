@@ -11,10 +11,10 @@ module load synopsys
 bash rit/setup/install_deps.sh        # once; a few minutes
 source rit/setup/openpiton_env.sh     # every new terminal
 cd $PITON_ROOT/build
-pbuild -sys=manycore -x_tiles=1 -y_tiles=1 -build_id=ariane_1x1 -ariane 2>&1 | tee build.log
-sims -sys=manycore -x_tiles=1 -y_tiles=1 -build_id=ariane_1x1 -vcs_run hello_world.c -ariane -rtl_timeout 10000000
+pbuild -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -ariane -config_rtl=MINIMAL_MONITORING 2>&1 | tee build.log
+nocrun start parsec_blackscholes.c -D NUM_OPTIONS=16 --name bs16 --fg
 ```
-**Pass:** the run ends with `Simulation -> PASS (HIT GOOD TRAP)`, and `build/fake_uart.log` holds the program's `printf` output.
+**Pass:** the run ends with `PASS` (176,671 cycles), and its folder's `uart.log` (`~/noc_runs/<date>_bs16_2x1_r1/`) ends with `Num Errors: 0`.
 
 Tip: add `source ~/openpiton/rit/setup/openpiton_env.sh` to your `~/.bashrc` if you don't want to source it by hand.
 
@@ -73,7 +73,7 @@ Everything goes under `$HOME`, nothing needs root, and finished steps are skippe
 - `PITON_VCS_FIX_ARGS` holds the same arguments as one variable, for scripts that call `sims` directly:
   `-vcs_build_args=-LDFLAGS -vcs_build_args=-B$HOME/opt/binutils-2.30/bin -vcs_build_args=$HOME/opt/vcs_compat/pthread_yield.o`.
   Some VCS link steps call `ld` from `PATH` (handled by the shim); others go through `g++`, which `-B` points at ld 2.30. Each `-vcs_build_args=` passes **one** argument to VCS, which avoids quoting problems.
-- `PYTHONPATH` gets `rit/`, so `python3 -m noctrace` works from anywhere.
+- `PATH` gets `rit/bin` (for `nocrun`), `NOC_RUNS` defaults to `~/noc_runs`, and `PYTHONPATH` gets `rit/` (for the analysis `nocrun` runs).
 
 Sourcing it repeatedly in one terminal keeps prepending the same folders to `PATH`. That's harmless; `exec bash` gives a clean shell.
 
@@ -104,13 +104,13 @@ Do this in a scratch folder, **not** inside the repo: VCS drops `csrc/`, `simv.d
 
 ## Building and running
 
-Run `sims` from `$PITON_ROOT/build`, never from the repo root. Everything under `build/` is git-ignored.
+Build from `$PITON_ROOT/build`, never from the repo root. Everything under `build/` is git-ignored. Runs go through `nocrun`, which runs `sims` inside each run's own folder under `~/noc_runs/` ([`runs.md`](runs.md)).
 
 ```bash
 cd $PITON_ROOT/build
 rm -rf manycore/ariane_2x2          # clean out an earlier failed build
 pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane 2>&1 | tee build_2x2.log
-sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_world.c -ariane -rtl_timeout 10000000
+nocrun start hello_world.c -m 2x2 --fg
 ```
 - The model ends up in `build/manycore/<build_id>/`. On success `simv` exists there and the log has no `Caught a SIG`.
 - `-config_rtl=MINIMAL_MONITORING` cuts monitor output but also removes OpenPiton's built-in router monitor. The NoC trace monitor still works.

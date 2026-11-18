@@ -5,13 +5,13 @@ Copy-paste templates for the commands you'll use most. Each one has:
 - a **placeholder table**
 - a **real example**, filled in
 
-All commands assume a lab account set up per [`rhel9_vcs_setup.md`](rhel9_vcs_setup.md). For details on any `noctrace` option see [`noctrace_reference.md`](noctrace_reference.md); for the full workflow see [`noc_trace.md`](noc_trace.md).
+All commands assume a lab account set up per [`rhel9_vcs_setup.md`](rhel9_vcs_setup.md). For the full workflow see [`noc_trace.md`](noc_trace.md) and [`runs.md`](runs.md); every analysis option and output column is in [`noctrace_reference.md`](noctrace_reference.md).
 
 **Contents**
 - [Every session](#every-session): [load environment](#load-the-environment) · [get latest code](#get-the-latest-code)
 - [Building](#building): [new build](#build-a-new-model) · [check monitor](#check-a-model-includes-the-trace-monitor) · [clean a failed build](#delete-a-failed-or-outdated-build)
-- [Running](#running): [sim with trace](#run-a-simulation-with-tracing) · [trace part of a run](#trace-only-part-of-a-run) · [benchmark](#run-a-benchmark-on-the-2x1-model) · [sim without trace](#run-a-simulation-without-tracing) · [check a run](#check-a-run-worked-and-wrote-a-trace)
-- [Analyzing](#analyzing): [basic](#analyze-a-trace) · [per-core signatures](#per-core-signatures-for-slides) · [compare runs](#compare-several-runs) · [time range / one NoC](#zoom-into-a-time-range-or-one-noc) · [old sims.log](#analyze-an-old-simslog)
+- [Running](#running): [start a run](#start-a-run) · [check on runs](#check-on-runs) · [checkpoint restore](#continue-a-run-from-its-checkpoint)
+- [Analyzing](#analyzing): [window size](#another-window-size) · [compare runs](#compare-runs) · [flits / one NoC / time range](#variants-flits-one-noc-a-time-range)
 - [Looking at results](#looking-at-results)
 - [One-time / occasional](#one-time--occasional): [first-time setup](#first-time-setup-of-an-account) · [self-test](#self-test-no-vcs)
 
@@ -59,7 +59,7 @@ If the pull changed anything under `piton/` (RTL or testbench), **rebuild your m
 
 ### Build a new model
 
-One build per mesh size and configuration. The trace monitor is included automatically.
+One build per mesh size and configuration. The trace monitor is included automatically. Name it `ariane_<x>x<y>`: that's the model `nocrun` uses by default.
 
 ```bash
 # template
@@ -72,13 +72,13 @@ pbuild -sys=manycore -x_tiles=<x_tiles> -y_tiles=<y_tiles> -build_id=<build_id> 
 | `<x_tiles>` | mesh width (tiles per row), e.g. `2`, `4` |
 | `<y_tiles>` | mesh height (rows), e.g. `2`, `4` |
 | `<build_id>` | name for this model; it's built in `build/manycore/<build_id>/`. Suggested: `ariane_<x>x<y>` |
-| `[-config_rtl=MINIMAL_MONITORING]` | optional: less monitor output in `sims.log`; the trace monitor still works |
+| `[-config_rtl=MINIMAL_MONITORING]` | recommended: keeps `sims.log` small on long runs; the trace monitor still works |
 | `<build_log>` | file to save the build output to |
 
 ```bash
-# example: 2x2
+# example: the 2x1 used for the benchmarks
 cd $PITON_ROOT/build
-pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane 2>&1 | tee build_ariane_2x2.log
+pbuild -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -ariane -config_rtl=MINIMAL_MONITORING 2>&1 | tee build_ariane_2x1.log
 ```
 ```bash
 # example: 4x4 with minimal monitoring
@@ -118,293 +118,126 @@ rm -rf $PITON_ROOT/build/manycore/ariane_2x2
 
 ## Running
 
-Test programs are in `$PITON_ROOT/piton/verif/diag/c/riscv/ariane/`. List them with `ls $PITON_ROOT/piton/verif/diag/c/riscv/ariane/`. For example: `hello_world.c`, `hello_world_many.c`, `add_shared_var.c`, `accu_test.c`.
+Every run goes through `nocrun`: each run gets its own folder under `~/noc_runs/`, survives logging out, records exactly how it was made, and is analyzed when it ends. Details: [`runs.md`](runs.md).
 
-### Start a run with nocrun (recommended)
+Test programs are in `$PITON_ROOT/piton/verif/diag/c/riscv/ariane/` (give just the file name; `nocrun` finds it). The benchmarks are in its `rit/` folder: `parsec_blackscholes.c`, `aibench_conv2d.c` ([`../benchmarks/README.md`](../benchmarks/README.md)). Small tests: `hello_world.c`, `hello_world_many.c`, `add_shared_var.c`.
 
-Each run gets its own folder under `~/noc_runs/`, survives logging out, and is analyzed when it ends. Details: [`runs.md`](runs.md).
+### Start a run
 
 ```bash
 # template
-nocrun start <program> -b <build_id> [-m <XxY>] [-D <NAME>=<value> ...] [--name <name>] [--save-at <cycle>] [--fg]
-nocrun status                                   # what's running, what just finished
-nocrun analyze <run> -w <window>                # another window size -> <run>/analysis/w<window>/
-nocrun compare <run> <run> ... -w <window>      # several runs together
-nocrun restore <run>                            # continue a run from its checkpoint
+nocrun start <program> [-m <XxY>] [-D <NAME>=<value> ...] [--name <name>] [--note "<text>"] \
+             [--trace-start <cycle>] [--trace-stop <cycle>] [--full-trace] [--save-at <cycle>] [--fg]
 ```
+
+| Placeholder | Meaning |
+|---|---|
+| `<program>` | test program file name, e.g. `parsec_blackscholes.c` |
+| `[-m <XxY>]` | mesh, default `2x1`. Uses the model `ariane_<XxY>` (`-b <build_id>` for another) |
+| `[-D <NAME>=<value>]` | compile-time setting, repeatable, e.g. `-D NUM_OPTIONS=16` (blackscholes input size) or `-D IMG_H=32 -D IMG_W=32` (conv2d image size) |
+| `[--name <name>]` | run name in the folder name; default the program name without `parsec_`/`aibench_` |
+| `[--note "<text>"]` | saved in `run_info.txt` |
+| `[--trace-start/--trace-stop <cycle>]` | trace only these cycles. Programs with ROI markers (the benchmarks) are already traced only in their ROI |
+| `[--full-trace]` | ignore the program's ROI markers and trace the whole run |
+| `[--save-at <cycle>]` | save a checkpoint at this cycle; the run keeps going |
+| `[--fg]` | run in this terminal and wait (default: background, safe to log out) |
 
 ```bash
 # examples
-nocrun start parsec_blackscholes.c -D NUM_OPTIONS=16 --name bs16 --fg   # smoke test, wait for it
-nocrun start aibench_conv2d.c                                           # full run, background
-nocrun analyze conv2d_2x1_r1 -w 80000
+nocrun start parsec_blackscholes.c -D NUM_OPTIONS=16 --name bs16 --fg   # smoke test (~176,671 cycles), wait for it
+nocrun start parsec_blackscholes.c                                      # full run: simsmall, ~20 min
+nocrun start aibench_conv2d.c                                           # full run: one 227x227 image, ~4 h
+nocrun start aibench_conv2d.c -D IMG_H=32 -D IMG_W=32 --name conv32     # conv2d smoke test
+nocrun start hello_world_many.c --trace-start 50000 --trace-stop 150000 # cycle window on any program
 ```
 
-### Run a simulation with tracing
+For throwaway runs, put them in another folder so they stay out of your real index: `NOC_RUNS=~/noc_runs_scratch nocrun start ...`
+
+### Check on runs
+
+```bash
+nocrun status                          # what's running, the last 5 finished
+nocrun list                            # every run (runs.csv);  nocrun list --grep conv2d
+cat ~/noc_runs/<run>/run_info.txt      # one run: PASS/FAIL, cycles, ROI per core, trace, checkpoint
+cat ~/noc_runs/<run>/uart.log          # the program's printf output: Num Errors, ROI cycles
+```
+
+**Success:** `status` is `PASS`, `uart.log` ends with `Num Errors: 0`, and `run_info.txt` lists a trace and `analysis: w10000`.
+
+### Continue a run from its checkpoint
 
 ```bash
 # template
-cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=<x_tiles> -y_tiles=<y_tiles> -build_id=<build_id> -vcs_run <test> -ariane \
-     -rtl_timeout <timeout> \
-     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=<trace>
-```
-
-| Placeholder | Meaning |
-|---|---|
-| `<x_tiles>`, `<y_tiles>`, `<build_id>` | must match the build you're running |
-| `<test>` | test program file name, e.g. `hello_world.c` |
-| `<timeout>` | timeout limit; the run is killed if it goes longer. `10000000` is plenty for small tests; raise it for long programs |
-| `<trace>` | trace file to write, in `$PITON_ROOT/build/`. Suggested: `<app>_<x>x<y>_r<round>.csv`. An existing file with this name is overwritten |
-
-```bash
-# example
-cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_world.c -ariane \
-     -rtl_timeout 10000000 \
-     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=hello_2x2_r1.csv
-```
-
-To also get OpenPiton's built-in router lines in `sims.log`, add `-sim_run_args=+enable_router_mon`. You don't need it when tracing.
-
-### Trace only part of a run
-
-Programs with ROI markers (the benchmarks below) are traced only between their markers automatically. For any program you can also limit the trace by cycle:
-
-```bash
-# template
-sims ... -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=<trace> \
-     [-sim_run_args=+noc_trace_start=<first_cycle>] [-sim_run_args=+noc_trace_stop=<stop_cycle>] [-sim_run_args=+noc_trace_full]
-```
-
-| Placeholder | Meaning |
-|---|---|
-| `<first_cycle>` | log nothing before this cycle |
-| `<stop_cycle>` | log nothing from this cycle on |
-| `+noc_trace_full` | ignore the program's ROI markers (trace everything, within any cycle limits) |
-
-```bash
-# example: cycles 50,000-150,000 of hello_world_many on the 2x1
-cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -vcs_run hello_world_many.c -ariane \
-     -finish_mask 0x11 -rtl_timeout 10000000 \
-     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=hellomany_2x1_win.csv \
-     -sim_run_args=+noc_trace_start=50000 -sim_run_args=+noc_trace_stop=150000
-```
-
-`noctrace` counts cycles from where the window opened; add `--absolute-cycles` to keep run cycles.
-
-### Run a benchmark on the 2x1 model
-
-Bare-metal ports of PARSEC blackscholes and AIBench conv2d, one thread per core, traced only in their region of interest. Background and options: [`../benchmarks/README.md`](../benchmarks/README.md).
-
-```bash
-# template
-cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=<build_id> -vcs_run <benchmark> -ariane \
-     -finish_mask 0x11 -rtl_timeout 10000000 -max_cycle=2000000000 [-gcc_args=-D<NAME>=<value> ...] \
-     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=<trace>
-```
-
-| Placeholder | Meaning |
-|---|---|
-| `<build_id>` | the 2x1 model, e.g. `ariane_2x1` |
-| `<benchmark>` | `parsec_blackscholes.c` or `aibench_conv2d.c` |
-| `-gcc_args=-D<NAME>=<value>` | optional compile-time setting, one `-gcc_args` per define, e.g. `-gcc_args=-DNUM_OPTIONS=16` (blackscholes input size) or `-gcc_args=-DIMG_H=32 -gcc_args=-DIMG_W=32` (conv2d image size) |
-| `<trace>` | trace file, e.g. `blackscholes_2x1_r1.csv` |
-
-```bash
-# example: blackscholes, simsmall input (4096 options), 1 run
-cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -vcs_run parsec_blackscholes.c -ariane \
-     -finish_mask 0x11 -rtl_timeout 10000000 -max_cycle=2000000000 \
-     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=blackscholes_2x1_r1.csv
-cat fake_uart.log        # Num Errors: 0, ROI cycles per hart
-```
-```bash
-# example: conv2d smoke test on a 32x32 image
-cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -vcs_run aibench_conv2d.c -ariane \
-     -finish_mask 0x11 -rtl_timeout 10000000 -max_cycle=2000000000 \
-     -gcc_args=-DIMG_H=32 -gcc_args=-DIMG_W=32 \
-     -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=conv32_2x1_smoke.csv
-```
-
-**Success:** `sims.log` has `sims: NoC trace window marker ...`, `noc_trace_mon: window opened ...` / `closed ...` and `PASS (HIT GOOD TRAP)`; `fake_uart.log` ends with `Num Errors: 0`.
-
-### Run a simulation without tracing
-
-```bash
-# template
-cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=<x_tiles> -y_tiles=<y_tiles> -build_id=<build_id> -vcs_run <test> -ariane -rtl_timeout <timeout>
+nocrun restore <run> [--name <name>] [--fg]
 ```
 
 ```bash
 # example
-cd $PITON_ROOT/build
-sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_world.c -ariane -rtl_timeout 10000000
+nocrun start parsec_blackscholes.c -D NUM_OPTIONS=64 --name cktest --save-at 50000 --fg
+nocrun restore cktest --fg             # new run folder, continues from cycle 50,000
 ```
 
-### Check a run worked and wrote a trace
-
-`sims.log` and `fake_uart.log` are rewritten by every run, so check right after the run.
-
-```bash
-# template
-cd $PITON_ROOT/build
-grep -E "noc_trace_mon|PASS|FAIL" sims.log
-ls -lh <trace> && head -6 <trace>
-cat fake_uart.log
-```
-
-```bash
-# example
-cd $PITON_ROOT/build
-grep -E "noc_trace_mon|PASS|FAIL" sims.log
-ls -lh hello_2x2_r1.csv && head -6 hello_2x2_r1.csv
-cat fake_uart.log
-```
-
-**Success:** `noc_trace_mon: writing flit trace to <trace>`, `Simulation -> PASS (HIT GOOD TRAP)`, and the trace has data rows after the 5 header lines. `fake_uart.log` is the program's `printf` output.
+A checkpoint only restores into the exact model that saved it; rebuilding the model makes it useless.
 
 ---
 
 ## Analyzing
 
-Results go to `<results_dir>/<trace name without .csv>/`. Keep `<results_dir>` outside the repo.
+Every run is analyzed at 10,000-cycle windows when it ends. These commands make more analyses; each goes in its own folder, so nothing is overwritten. `<run>` can be any unique part of a run folder's name.
 
-### Analyze a trace
-
-All tables and plots with default settings: 100 time bins, signatures counting packets each tile sent.
+### Another window size
 
 ```bash
 # template
-python3 -m noctrace <trace> -o <results_dir>
+nocrun analyze <run> [<run> ...] -w <window>
 ```
 
 | Placeholder | Meaning |
 |---|---|
-| `<trace>` | trace file (path relative to where you are, or absolute) |
-| `<results_dir>` | where results go, e.g. `~/noc_results` |
+| `<window>` | window/bin size in cycles. Results go to `<run>/analysis/w<window>/`. **Use the same size for runs you compare** |
 
 ```bash
 # example
-cd $PITON_ROOT/build
-python3 -m noctrace hello_2x2_r1.csv -o ~/noc_results
+nocrun analyze conv2d_2x1_r1 -w 80000
 ```
 
-### Per-core signatures for slides
-
-Fixed-size windows, flits or packets per core and in total, titled with the app and round.
+### Compare runs
 
 ```bash
 # template
-python3 -m noctrace <trace> --bin <cycles_per_bin> --window <cycles_per_window> \
-        --signature-unit <unit> [--signature-metric <metric>] \
-        --app <app_name> --round <round> -o <results_dir>
+nocrun compare <run> <run> [...] -w <window>
 ```
-
-| Placeholder | Meaning |
-|---|---|
-| `<cycles_per_bin>` | bin width in cycles for the over-time tables and plots, e.g. `10000` |
-| `<cycles_per_window>` | window width in cycles for the per-core signatures; usually the same as the bin. **Keep it the same across runs you compare** |
-| `<unit>` | `packets` or `flits`: what the signature plots count |
-| `[--signature-metric <metric>]` | optional, default `injected`. `injected` = what each tile sent; `ejected` = what was delivered to it; `router` = everything through its router |
-| `<app_name>` | name for titles and CSVs, e.g. `hello_world` |
-| `<round>` | round label for titles and CSVs, e.g. `1` |
-| `<results_dir>` | where results go |
 
 ```bash
 # example
-cd $PITON_ROOT/build
-python3 -m noctrace hello_2x2_r1.csv --bin 10000 --window 10000 \
-        --signature-unit flits \
-        --app hello_world --round 1 -o ~/noc_results
-```
-```bash
-# example: counting what each tile receives, in packets
-cd $PITON_ROOT/build
-python3 -m noctrace hello_2x2_r1.csv --bin 10000 --window 10000 \
-        --signature-unit packets --signature-metric ejected \
-        --app hello_world --round 1 -o ~/noc_results
+nocrun compare blackscholes conv2d -w 20000
 ```
 
-Output: `signatures/core<N>.png`, `signatures/total.png`, `signatures_all_cores.png`, `signatures.csv`, `signatures_total.csv`, plus the standard tables and plots.
+Writes one result folder per run plus `runs_summary.csv` (one row per run) to `~/noc_runs/compare/<time>_w<window>/`.
 
-### Compare several runs
+### Variants: flits, one NoC, a time range
 
-Each trace is analyzed separately, and `<results_dir>/runs_summary.csv` gets one row per run. `--app` and `--round` are given once per trace, in the same order as the traces.
+Anything after `--` is passed to the analysis unchanged ([reference §3](noctrace_reference.md#3-noctrace-command-line)). Give each variant its own `--tag` (its folder name under `analysis/`).
 
 ```bash
 # template
-python3 -m noctrace <trace_1> <trace_2> [<trace_3> ...] \
-        --bin <cycles_per_bin> --window <cycles_per_window> --signature-unit <unit> \
-        --app <app_1> --app <app_2> [--app <app_3> ...] \
-        --round <round_1> --round <round_2> [--round <round_3> ...] \
-        -o <results_dir>
-```
-
-```bash
-# example: three rounds of the same program
-cd $PITON_ROOT/build
-python3 -m noctrace hello_2x2_r1.csv hello_2x2_r2.csv hello_2x2_r3.csv \
-        --bin 10000 --window 10000 --signature-unit flits \
-        --app hello_world --app hello_world --app hello_world \
-        --round 1 --round 2 --round 3 \
-        -o ~/noc_results
-cat ~/noc_results/runs_summary.csv
-```
-```bash
-# example: same program on 2x2 and 4x4
-cd $PITON_ROOT/build
-python3 -m noctrace hello_2x2_r1.csv hello_4x4_r1.csv \
-        --bin 10000 --window 10000 --signature-unit flits \
-        --app hello_world_2x2 --app hello_world_4x4 \
-        --round 1 --round 1 \
-        -o ~/noc_results
-```
-
-### Zoom into a time range or one NoC
-
-```bash
-# template
-python3 -m noctrace <trace> [--start <first_cycle>] [--end <last_cycle>] [--noc <noc_list>] \
-        --bin <cycles_per_bin> --name <results_name> -o <results_dir>
+nocrun analyze <run> -w <window> --tag <tag> -- [--signature-unit flits] [--signature-metric <metric>] \
+               [--noc <noc_list>] [--start <first_cycle>] [--end <last_cycle>]
 ```
 
 | Placeholder | Meaning |
 |---|---|
-| `<first_cycle>`, `<last_cycle>` | cycle range to keep |
+| `<tag>` | folder name under `<run>/analysis/`, e.g. `w10000_flits` |
+| `--signature-unit flits` | count flits instead of packets in the per-core signatures |
+| `<metric>` | `injected` (default) = what each tile sent; `ejected` = what was delivered to it; `router` = everything through its router |
 | `<noc_list>` | NoCs to keep, comma-separated: `1`, `2`, `3`, `1,3` |
-| `<results_name>` | folder name for these results, so they don't overwrite the full-run results |
+| `<first_cycle>`, `<last_cycle>` | cycle range to keep, counted from the ROI start |
 
 ```bash
-# example: cycles 1,000,000-1,200,000, 1,000-cycle bins
-cd $PITON_ROOT/build
-python3 -m noctrace hello_2x2_r1.csv --start 1000000 --end 1200000 --bin 1000 \
-        --name hello_2x2_r1_zoom -o ~/noc_results
-```
-```bash
-# example: NoC2 only
-cd $PITON_ROOT/build
-python3 -m noctrace hello_2x2_r1.csv --noc 2 --bin 10000 \
-        --name hello_2x2_r1_noc2 -o ~/noc_results
-```
-
-### Analyze an old sims.log
-
-Only for runs that had `-sim_run_args=+enable_router_mon`. Less complete than a trace: no tile-local traffic, no latency, sources guessed.
-
-```bash
-# template
-python3 -m noctrace <sims_log> --x-tiles <x_tiles> --y-tiles <y_tiles> --name <results_name> -o <results_dir>
-```
-
-```bash
-# example
-cd $PITON_ROOT/build
-python3 -m noctrace sims.log --x-tiles 2 --y-tiles 2 --name hello_2x2_simslog -o ~/noc_results
+# examples
+nocrun analyze blackscholes -w 10000 --tag w10000_flits -- --signature-unit flits
+nocrun analyze blackscholes -w 10000 --tag w10000_noc2 -- --noc 2
+nocrun analyze blackscholes -w 1000 --tag zoom -- --start 1000000 --end 1200000
 ```
 
 ---
@@ -413,17 +246,16 @@ python3 -m noctrace sims.log --x-tiles 2 --y-tiles 2 --name hello_2x2_simslog -o
 
 ```bash
 # template
-cat <results_dir>/<results_name>/summary.txt
-ls <results_dir>/<results_name>/
+cat ~/noc_runs/<run_folder>/analysis/<tag>/summary.txt
+ls ~/noc_runs/<run_folder>/analysis/<tag>/
 ```
 
 ```bash
 # example
-cat ~/noc_results/hello_2x2_r1/summary.txt
-ls ~/noc_results/hello_2x2_r1/
+cat ~/noc_runs/2026-11-17_conv2d_2x1_r1/analysis/w10000/summary.txt
 ```
 
-**Plots on your PC:** in MobaXterm's **SFTP** sidebar, enter `/home/<username>/noc_results/<results_name>/` in the path box and double-click a PNG. For example, for username `abc1234`: `/home/abc1234/noc_results/hello_2x2_r1/`. (`echo $HOME` prints yours.)
+**Plots on your PC:** in MobaXterm's **SFTP** sidebar, enter `/home/<username>/noc_runs/<run_folder>/analysis/w10000/` in the path box and double-click a PNG. (`echo $HOME` prints your home folder.)
 
 **Top rows of any CSV:**
 ```bash
@@ -432,17 +264,14 @@ python3 -c "import pandas as pd; print(pd.read_csv('<csv_file>').head(<rows>).to
 ```
 ```bash
 # example
-python3 -c "import pandas as pd; print(pd.read_csv('~/noc_results/hello_2x2_r1/per_path.csv').head(15).to_string())"
+cd ~/noc_runs/2026-11-17_conv2d_2x1_r1/analysis/w10000
+python3 -c "import pandas as pd; print(pd.read_csv('per_path.csv').head(15).to_string())"
 ```
 
 **Slowest packets:**
 ```bash
-# template
-python3 -c "import pandas as pd; p=pd.read_csv('<results_dir>/<results_name>/packets.csv'); print(p.nlargest(<rows>,'latency')[['noc','src','dst','msg_name','flits','inject_cycle','latency']].to_string())"
-```
-```bash
-# example
-python3 -c "import pandas as pd; p=pd.read_csv('~/noc_results/hello_2x2_r1/packets.csv'); print(p.nlargest(10,'latency')[['noc','src','dst','msg_name','flits','inject_cycle','latency']].to_string())"
+# example, from inside an analysis folder
+python3 -c "import pandas as pd; p=pd.read_csv('packets.csv'); print(p.nlargest(10,'latency')[['noc','src','dst','msg_name','flits','inject_cycle','latency']].to_string())"
 ```
 
 ---

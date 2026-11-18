@@ -13,9 +13,11 @@ rit/
 │   ├── rhel9_vcs_setup.md     building and running OpenPiton + Ariane on lab machines
 │   ├── command_templates.md   copy-paste templates for common commands, with examples
 │   ├── noc_trace.md           NoC tracing user guide: workflow, recipes, troubleshooting
-│   └── noctrace_reference.md  every plusarg, option, output file and column
+│   ├── runs.md                nocrun: run folders, options, checkpoints
+│   ├── linux_sim.md           plan for booting Linux in the simulation
+│   └── noctrace_reference.md  every plusarg, analysis option, output file and column
 ├── bin/nocrun                 start runs in their own folders, analyze, compare, checkpoint/restore
-├── noctrace/                  Python package: parse + analyze flit traces
+├── noctrace/                  Python package nocrun uses to analyze traces
 ├── benchmarks/                bare-metal benchmark ports for the 2x1 model: README, generator, QEMU check
 └── test/                      self-test (Icarus, no VCS) + docs coverage check
 
@@ -36,11 +38,10 @@ piton/verif/diag/assembly/include/riscv/ariane/rit/   their headers (bench.h, ma
 | **copy a command** (build, run, analyze...) with placeholders and a real example | [`docs/command_templates.md`](docs/command_templates.md) |
 | set up a lab account, build and run OpenPiton | [`docs/rhel9_vcs_setup.md`](docs/rhel9_vcs_setup.md) |
 | record NoC traffic and analyze it | [`docs/noc_trace.md`](docs/noc_trace.md) (user guide) |
-| look up a run switch, `noctrace` option, output file or column | [`docs/noctrace_reference.md`](docs/noctrace_reference.md) |
+| look up a trace switch, analysis option, output file or column | [`docs/noctrace_reference.md`](docs/noctrace_reference.md) |
 | run PARSEC blackscholes / AIBench conv2d on the 2x1 model | [`benchmarks/README.md`](benchmarks/README.md) |
 | start runs without overwriting results, keep them organized, checkpoints | [`docs/runs.md`](docs/runs.md) |
 | plan and findings for booting Linux in the simulation | [`docs/linux_sim.md`](docs/linux_sim.md) |
-| see all `noctrace` options from the terminal | `python3 -m noctrace --help` |
 
 ## New to this repo
 
@@ -51,18 +52,18 @@ module load synopsys
 bash rit/setup/install_deps.sh            # once
 source rit/setup/openpiton_env.sh         # every terminal
 ```
-Then follow [`docs/rhel9_vcs_setup.md`](docs/rhel9_vcs_setup.md) to build and run, and [`docs/noc_trace.md`](docs/noc_trace.md) to trace traffic.
+Then follow [`docs/rhel9_vcs_setup.md`](docs/rhel9_vcs_setup.md) to build, and [`docs/noc_trace.md`](docs/noc_trace.md) to run and trace traffic.
 
 ## Typical NoC traffic run
 
 ```bash
 source ~/openpiton/rit/setup/openpiton_env.sh
 cd $PITON_ROOT/build
-pbuild -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -ariane     # build (monitor included automatically)
-sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_world.c -ariane \
-     -rtl_timeout 10000000 -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=hello_2x2_r1.csv
-python3 -m noctrace hello_2x2_r1.csv --bin 10000 --window 10000 -o ~/noc_results
-cat ~/noc_results/hello_2x2_r1/summary.txt
+pbuild -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -ariane -config_rtl=MINIMAL_MONITORING   # build once (monitor included)
+nocrun start parsec_blackscholes.c                  # run in its own folder, traced and analyzed at the end
+nocrun status                                       # check on it
+cat ~/noc_runs/<run>/analysis/w10000/summary.txt    # results
+nocrun analyze <run> -w 80000                       # another window size
 ```
 
 ## Working in this repo
@@ -77,4 +78,4 @@ cat ~/noc_results/hello_2x2_r1/summary.txt
   ```
 - **Add files by name.** Never run `git add -A` or `git add .`: simulation runs leave large generated files around the tree.
 - **Never commit:** anything under `build/`, traces or results, the Ariane submodule pointer (`piton/design/chip/tile/ariane` shows as modified after a build; that's build output), or the patched UVM copy in `~/opt` (Synopsys's licensed code).
-- Run `sims` from `build/`, and VCS smoke tests from a scratch folder, never from the repo root.
+- Start runs with `nocrun` (they run in `~/noc_runs/`, outside the repo). Build with `pbuild` from `build/`, and do VCS smoke tests in a scratch folder, never from the repo root.

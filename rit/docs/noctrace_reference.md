@@ -2,6 +2,8 @@
 
 The complete list of every switch, option, file and column. For a walkthrough, start with the user guide, [`noc_trace.md`](noc_trace.md).
 
+You normally don't type any of these directly: `nocrun start` sets the trace switches (§1) from its own options, and `nocrun analyze` / `nocrun compare` run the analysis (§3) and pass on any options you put after `--`. This page is what those options mean.
+
 **Contents**
 1. [Trace monitor (`noc_trace_mon`)](#1-trace-monitor-noc_trace_mon): run-time switches, trace window, build integration
 2. [Trace file format](#2-trace-file-format)
@@ -19,23 +21,28 @@ The complete list of every switch, option, file and column. For a walkthrough, s
 
 ### Run-time switches (plusargs)
 
-Passed through `sims` with `-sim_run_args=`, **one plusarg per `-sim_run_args`**:
+`nocrun start` passes these to the simulation for you:
+
+| `nocrun start` option | Plusargs it sets |
+|---|---|
+| (default) | `+noc_trace` `+noc_trace_file=trace.csv` (in the run folder) |
+| `--trace-start N` / `--trace-stop N` | `+noc_trace_start=N` / `+noc_trace_stop=N` |
+| `--full-trace` | `+noc_trace_full` |
+| `--no-trace` | none |
+| `--sim-arg +PLUSARG` | any plusarg, as given |
+
+The ROI marker plusargs are added by `sims` itself when the program has the markers. Full list:
 
 | Plusarg | Default | Effect |
 |---|---|---|
 | `+noc_trace` | off | Turn the trace on. Without it the monitor does nothing and writes no file. |
-| `+noc_trace_file=NAME` | `noc_trace.csv` | Output file name. Relative names land in the directory `sims` was run from (normally `$PITON_ROOT/build/`). An existing file with the same name is **overwritten**. |
+| `+noc_trace_file=NAME` | `noc_trace.csv` | Output file name. Relative names land in the directory `sims` was run from (`nocrun`: the run folder). An existing file with the same name is **overwritten**. |
 | `+noc_trace_start=NAME` | 0 | Trace window: log nothing before this cycle (NAME is a cycle number). |
 | `+noc_trace_stop=NAME` | none | Trace window: log nothing from this cycle on. |
 | `+noc_roi_begin_pc=NAME` | none | Trace window: open the window when any Ariane core commits the instruction at this address (hex). **`sims` passes it automatically** when the test program contains the `noc_roi_begin_mark` label (programs that call `noc_roi_begin()` from `rit/bench.h`). |
 | `+noc_roi_end_pc=NAME` | none | Trace window: close the window when any core commits this address. Passed automatically for `noc_roi_end_mark`. Without it, a window opened by the begin PC stays open to the end of the run. |
 | `+noc_trace_full` | off | Ignore `+noc_roi_begin_pc` / `+noc_roi_end_pc` (so ignore a program's ROI markers) and trace the whole run. `+noc_trace_start` / `+noc_trace_stop` still apply. |
 | `+enable_router_mon` | off | Not part of this monitor. Turns on OpenPiton's built-in router monitor, which prints router-to-router flits into `sims.log`. Only useful for the `router_mon` input format (§3). |
-
-```bash
-sims -sys=manycore -x_tiles=2 -y_tiles=2 -build_id=ariane_2x2 -vcs_run hello_world.c -ariane \
-     -rtl_timeout 10000000 -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=hello_2x2_r1.csv
-```
 
 The trace file is created when the window first opens: at cycle 0 without window options, at the ROI start with markers. The run's output (and `sims.log`) then shows `noc_trace_mon: writing flit trace to <NAME>`. **A run whose window never opens writes no file.** The name is read from `+noc_trace_file` at that moment, so a run restored from a checkpoint saved before the window opened writes its own trace in its own folder (see [`runs.md`](runs.md)). If the file can't be opened, the output shows `noc_trace_mon: ERROR could not open <NAME>, tracing disabled` and the simulation continues without a trace.
 
@@ -57,11 +64,8 @@ The begin/end PCs can open and close the window several times (for example once 
 **In the trace file** (§2): a `# window_config ...` line in the header records the options in use, and each time the window opens or closes the monitor writes a `# window_begin cycle=N time=T` or `# window_end cycle=N time=T` comment line at that point in the file, and prints `noc_trace_mon: window opened at cycle N` to the run's output. Runs with no window option don't get these lines.
 
 ```bash
-# trace only cycles 2,000,000-3,000,000 of a run
-sims ... -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=x.csv \
-     -sim_run_args=+noc_trace_start=2000000 -sim_run_args=+noc_trace_stop=3000000
-# a program with ROI markers, but trace everything
-sims ... -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=x.csv -sim_run_args=+noc_trace_full
+nocrun start <program> --trace-start 2000000 --trace-stop 3000000   # only cycles 2M-3M
+nocrun start parsec_blackscholes.c --full-trace                     # ignore the ROI markers, trace everything
 ```
 
 ### Build integration
@@ -149,11 +153,19 @@ Any CSV with the columns `cycle,noc,x,y,dir,port,flit` (and optionally `time`) i
 
 ## 3. `noctrace` command line
 
+`nocrun` runs the analysis as
+
 ```
-python3 -m noctrace TRACE [TRACE ...] [options]
+python3 -m noctrace <run>/trace.csv.gz -o <run>/analysis --name <tag> --bin <N> --window <N> --app <name> --round <N>
 ```
 
-Run with the env script sourced (`source ~/openpiton/rit/setup/openpiton_env.sh`), which puts `rit/` on `PYTHONPATH`. `python3 -m noctrace --help` prints the same information as this section.
+so `-o`, `--name`, `--bin`, `--window`, `--app` and `--round` are set for you (`-w N` sets the bin and window size, `--tag` the folder name). Any other option below goes after `--`:
+
+```bash
+nocrun analyze <run> -w 10000 --tag w10000_noc2 -- --noc 2
+```
+
+`python3 -m noctrace --help` prints the same information as this section.
 
 **Options repeated per trace:** `--name`, `--app` and `--round` can each be given several times. The n-th value applies to the n-th TRACE. A trace without a value uses the default.
 
