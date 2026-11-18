@@ -135,8 +135,8 @@ nocrun restore <run>                            # continue a run from its checkp
 
 ```bash
 # examples
-nocrun start parsec_blackscholes.c -b ariane_2x1_el9 -D NUM_OPTIONS=16 --name bs16 --fg   # smoke test, wait for it
-nocrun start aibench_conv2d.c -b ariane_2x1_el9                                           # full run, background
+nocrun start parsec_blackscholes.c -D NUM_OPTIONS=16 --name bs16 --fg   # smoke test, wait for it
+nocrun start aibench_conv2d.c                                           # full run, background
 nocrun analyze conv2d_2x1_r1 -w 80000
 ```
 
