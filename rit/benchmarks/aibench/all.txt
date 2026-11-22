@@ -1,0 +1,20 @@
+# The bare-metal AIBench Micro ports at their default sizes, for
+#   nocrun batch rit/benchmarks/aibench/all.txt -j N
+# One run per line, written as the arguments to `nocrun start`.
+# Rough VCS time on the lab machine (2x1, ~3,000-4,500 cycles/s) in brackets;
+# measure, then update. Sizes and why: rit/benchmarks/README.md.
+
+aibench_relu.c          # 1 x 227x227 NHWC            [< 1 h]
+aibench_add.c           # 1 x 227x227 NHWC            [~1 h]
+aibench_multiply.c      # 1 x 227x227 NHWC            [~1 h]
+aibench_sigmoid.c       # 1 x 227x227 NHWC            [~1-1.5 h]
+aibench_tanh.c          # 1 x 227x227 NHWC            [~1-1.5 h]
+aibench_softmax.c       # 1 x 227x227 NHWC            [~1.5-2 h]
+aibench_batch_norm.c    # 2 x 227x227 NHWC            [~1.5-2 h]
+aibench_matmul.c        # 1 x 64x64 -> 64x192 * 192x64 [~1.5-2 h]
+aibench_avg_pool.c      # 2 x 227x227 NCHW            [~2-3 h]
+aibench_max_pool.c      # 2 x 227x227 NCHW            [~2-3 h]
+aibench_dropout.c       # 1 x 32x32 NHWC              [~3-4 h]
+
+# conv2d already has a full run (2026-11-17); to repeat it:
+# aibench_conv2d.c      # 1 x 227x227 NCHW            [~4 h]

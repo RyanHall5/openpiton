@@ -26,14 +26,18 @@ SRC=$1; NH=${2:-2}; shift; [ $# -gt 0 ] && shift
 [ -f "$SRC" ] || SRC=$(find "$REPO/piton/verif/diag" -name "$(basename "$SRC")" | head -1)
 [ -f "$SRC" ] || { echo "can't find $1"; exit 1; }
 CC=${RV64_TARGET_TRIPLE:-riscv64-unknown-elf}-gcc
-W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+W=$(mktemp -d); [ -n "${QEMU_KEEP:-}" ] && echo "== build dir $W" || trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/inc"; cp -r "$INC"/. "$W/inc/"
 sed -i 's/#define PITON_UART_ADDRESS  0xFFF0C2C000ULL/#define PITON_UART_ADDRESS  0x10000000ULL/' "$W/inc/util.h"
 python3 - "$W/inc/syscalls.c" <<'PY'
 import sys
 p = sys.argv[1]; s = open(p).read()
+# pass() ends QEMU only from hart 0 (the hart that checks results in the rit
+# ports); other harts park, so they can't end the run before hart 0's verdict.
 s = s.replace("void __attribute__((noreturn, noinline)) pass () {",
-              "void __attribute__((noreturn, noinline)) pass () {\n  *(volatile unsigned int *)0x100000 = 0x5555;")
+              "void __attribute__((noreturn, noinline)) pass () {\n"
+              "  { unsigned long h; __asm__ volatile(\"csrr %0, mhartid\" : \"=r\"(h)); if (h) for (;;) __asm__ volatile(\"wfi\"); }\n"
+              "  *(volatile unsigned int *)0x100000 = 0x5555;")
 s = s.replace("void __attribute__((noreturn, noinline)) fail () {",
               "void __attribute__((noreturn, noinline)) fail () {\n  *(volatile unsigned int *)0x100000 = 0x13333;")
 open(p, "w").write(s)
@@ -43,8 +47,12 @@ MARCH=rv64imafdc
 echo 'int main(){return 0;}' > "$W/t.c"
 $CC -march=rv64imafdc_zicsr_zifencei -mabi=lp64d -c "$W/t.c" -o "$W/t.o" 2>/dev/null && MARCH=rv64imafdc_zicsr_zifencei
 cd "$W"
+# -fno-tree-loop-distribute-patterns: GCC >= 10 turns the byte loop inside
+# syscalls.c's own memset() into a call to memset(), i.e. infinite recursion
+# (the stack then overwrites the program). The lab's GCC 8.3 doesn't do that at
+# -O2, so this keeps the QEMU build like the sims build.
 $CC -I"$W/inc" -march=$MARCH -mabi=lp64d -DPREALLOCATE=1 -mcmodel=medany -static -std=gnu99 -O2 \
-    -fno-common -fno-builtin-printf -DPITON_NUMTILES=$NH "$@" -o diag.exe "$SRC" \
+    -fno-tree-loop-distribute-patterns -fno-common -fno-builtin-printf -DPITON_NUMTILES=$NH "$@" -o diag.exe "$SRC" \
     "$W/inc/syscalls.c" "$W/inc/crt.S" \
     -static -nostdlib -nostartfiles -lm -lgcc -T "$W/inc/link.ld"
 echo "== built $(basename "$SRC") for $NH harts ($MARCH) $*"
@@ -52,7 +60,7 @@ ${CC%gcc}nm diag.exe | awk '$3=="noc_roi_begin_mark"{printf("symbol.tbl: noc_roi
 echo "== running in QEMU (virt, $NH harts)"
 set +e
 timeout ${QEMU_TIMEOUT:-600} qemu-system-riscv64 -machine virt -smp "$NH" -m 256M -bios none \
-    -kernel diag.exe -nographic -monitor none -serial stdio ${QEMU_ICOUNT:+-icount shift=0}
+    -kernel diag.exe -nographic -monitor none -serial stdio ${QEMU_ICOUNT:+-icount shift=0} ${QEMU_ARGS:-}
 rc=$?
 set -e
 case $rc in

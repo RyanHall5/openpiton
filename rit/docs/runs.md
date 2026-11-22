@@ -133,7 +133,34 @@ diff <(grep -E "hart|Errors|Sum" *_cktest_2x1_r1/uart.log) <(grep -E "hart|Error
 Each run has its own folder, so runs can go in parallel, all using the same model. Limits:
 - **Don't rebuild a model while runs are using it.** Build a new `-build_id` instead.
 - **VCS licenses:** each running simulation holds one, from a pool shared across RIT. If none is free, the run fails at startup with a license error. Don't take more than you need.
-- **The lab machine is shared:** check `nproc` and `uptime` and leave cores for others. Each run uses one core and about 4–8 GB of RAM.
+- **The lab machine is shared:** check `nproc` and `uptime` and leave cores for others. Each run uses one CPU core and, with `MINIMAL_MONITORING`, about 0.1–0.5 GB of RAM.
+
+### What running together does (and doesn't) change
+
+- **The results don't change.** A simulation is deterministic: the same program on the same model gives the same cycle counts and the same trace whether it runs alone or next to ten others. Sim cycles, ROI cycles and the NoC data are unaffected.
+- **Wall time can change.** Runs on the same machine share its memory bandwidth and caches, and the CPU's clock drops a little when more cores are busy, so each run's cycles/s can be lower than alone. With a few runs on a machine with many cores the effect is usually small (a few percent to ~20%); it grows as the machine fills up or other users load it.
+- **So for time estimates, use cycles, not hours.** `sim cycles` is exact; `speed (cycles/s)` says how fast that run went. A run's isolated time ≈ its sim cycles ÷ the speed of a run that ran alone. Every `run_info.txt` records `other sims running` (simulations on the machine, any user, at start and end) and the load average, so you can tell which runs had company. `nocrun list` shows the same as `others_running`.
+- **To measure the slowdown on your machine:** start the same smoke test alone, then four copies at once, and compare their `speed (cycles/s)`.
+
+### Batches
+
+`nocrun batch` starts a list of runs as a queue, at most `-j N` at a time, in the background:
+
+```bash
+nocrun batch rit/benchmarks/aibench/all.txt -j 2     # 11 runs, 2 at a time
+nocrun status                                        # batch progress, then each run
+cat ~/noc_runs/batches/<batch>/batch.log             # when each run started and finished
+```
+
+- The list is a text file with one run per line, written as the arguments to `nocrun start` (`#` starts a comment):
+  ```
+  aibench_relu.c
+  aibench_matmul.c -D IMG_H=96 -D IMG_W=96 --name matmul96
+  ```
+- Every program in the list is checked before anything starts, so a typo doesn't stop the batch halfway.
+- `-j 1` (the default) runs them one after another: isolated wall times, total time = the sum. `-j 2`–`-j 4` finishes much sooner with each run slightly slower (see above).
+- The batch survives logging out, like a single run. Its folder, `~/noc_runs/batches/<date>_<time>_<list name>/`, has the list, `batch.log` and each run's console output. Each run's `run_info.txt` names its batch.
+- **Stop a whole batch** (the queue and its running simulations): `kill -- -$(cat ~/noc_runs/batches/<batch>/batch.pid)`. Runs that were stopped show as `STOPPED` in `nocrun status`; `nocrun finish <run>` records what they got to.
 
 ## Which VCS
 

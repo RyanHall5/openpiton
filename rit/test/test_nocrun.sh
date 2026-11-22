@@ -2,7 +2,7 @@
 # Checks rit/bin/nocrun without VCS: a fake `sims` writes the files a real run
 # writes (sims.log, sim.log, fake_uart.log, trace.csv, diag.*, trace_hart_*.log),
 # then this checks the run folder, the index, analysis at two windows, compare,
-# import, and a killed run.
+# import, a killed run, checkpoints, a detached run and a batch.
 #   usage: rit/test/test_nocrun.sh        (needs a trace from rit/test/run_test.sh 2 1)
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -35,7 +35,10 @@ echo "hello" > diag.c; echo x > diag.exe; echo x > mem.image; echo "good_trap 1 
 echo "instruction" >> trace_hart_0.log
 [ -n "\${TF:-}" ] && cp "$SRC" "\$TF"
 case "\$*" in *+rit_save_at=*) echo "checkpoint bytes" > checkpoint.vcs;; esac
-printf "PARSEC blackscholes (bare-metal port)\nhart 0: ROI cycles 2030996, instructions 910601\nhart 1: ROI cycles 2090539, instructions 910744\nNum Errors: 0\n" > fake_uart.log
+printf "PARSEC blackscholes (bare-metal port)\nhart 0: ROI cycles 2030996, instructions 910601\nhart 1: ROI cycles 2090539, instructions 910744\n" > fake_uart.log
+case "\$*" in *aibench_relu*) printf "Checksum: 0x9bb2151206d00020\nChecksum matches the original AIBench output\n" >> fake_uart.log;; esac
+printf "Num Errors: 0\n" >> fake_uart.log
+sleep \${FAKE_SLEEP:-0}
 if [ -n "\${FAKE_KILL:-}" ]; then echo "Received SIGHUP (signal 1), exiting." >> sims.log; exit 0; fi
 printf "4001000: Simulation -> PASS (HIT GOOD TRAP)\n           V C S   S i m u l a t i o n   R e p o r t\nTime: 4001000 ps\nCPU Time:      2.000 seconds;\n" >> sims.log
 FAKE
@@ -97,4 +100,15 @@ check "restore: new folder, simv -r, PASS, trace analyzed, origin recorded" "gre
 $N start parsec_blackscholes.c > /dev/null
 for i in $(seq 1 60); do [ -z "$(ls "$NOC_RUNS"/*_r3/job.pid 2>/dev/null)" ] && [ -f "$(ls -d "$NOC_RUNS"/*_blackscholes_2x1_r3)/run.json" ] && grep -q '"status": "PASS"' "$NOC_RUNS"/*_blackscholes_2x1_r3/run.json 2>/dev/null && break; sleep 1; done
 check "detached run finishes by itself" "grep -q '\"status\": \"PASS\"' $NOC_RUNS/*_blackscholes_2x1_r3/run.json"
+# batch: three runs, two at a time, in the background
+printf "# test batch\naibench_relu.c\nparsec_blackscholes.c --name bb -D NUM_OPTIONS=16   # comment\n\naibench_conv2d.c --name cc\n" > "$T/list.txt"
+FAKE_SLEEP=3 $N batch "$T/list.txt" -j 2 > "$T/batch_out.txt"
+B=$(ls -d "$NOC_RUNS"/batches/*_list)
+for i in $(seq 1 90); do grep -q "batch done" "$B/batch.log" 2>/dev/null && break; sleep 1; done
+check "batch: all 3 runs finish, worker exits" "grep -q 'batch done' '$B/batch.log' && [ \$(grep -c ' finish .*PASS' '$B/batch.log') -eq 3 ] && [ ! -e '$B/batch.pid' ]"
+check "batch: never more than 2 at once (3rd starts after a finish)" "awk '/ start /{n++; if(n-f>2) bad=1} / finish /{f++} END{exit bad}' '$B/batch.log'"
+RB=$(ls -d "$NOC_RUNS"/*_relu_2x1_r1)
+check "batch: run records its batch, the machine load, and the reference checksum" "grep -q 'batch: *[0-9-]*_[0-9]*_list' '$RB/run_info.txt' && grep -q 'other sims running:' '$RB/run_info.txt' && grep -q 'checksum: *0x9bb2151206d00020 (matches original)' '$RB/run_info.txt' && grep -q 'matches original' '$NOC_RUNS/runs.csv'"
+check "batch: a typo in the list is caught before anything starts" "printf 'no_such_program.c\n' > '$T/bad.txt'; ! $N batch '$T/bad.txt' > /dev/null 2>&1"
+
 [ $ok = 1 ] && echo "NOCRUN ALL PASS" || { echo "NOCRUN CHECKS FAILED"; exit 1; }

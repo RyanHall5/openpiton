@@ -10,6 +10,7 @@
     nocrun finish  RUN                     tidy up a run (done automatically at the end of a run)
     nocrun reindex                         rebuild runs.csv from the run folders
     nocrun restore RUN [options]           continue a run from its checkpoint (start --save-at N)
+    nocrun batch   LIST [-j N]             start a queue of runs, N at a time (detached)
 
 Every run gets a folder  $NOC_RUNS/<date>_<name>_<mesh>_r<N>/  (NOC_RUNS defaults to
 ~/noc_runs). sims runs inside it, so files that sims overwrites (sims.log, diag.c,
@@ -62,7 +63,8 @@ NOASLR = "setarch $(uname -m) -R "
 RUNS_CSV_COLS = ["run", "date", "program", "mesh", "build_id", "defines", "status",
                  "sim_cycles", "roi_cycles_max", "roi_instructions_max", "num_errors",
                  "packets", "injected_flits", "load_flits_per_cycle", "trace_mb",
-                 "elapsed_s", "max_rss_gb", "cycles_per_s", "folder"]
+                 "elapsed_s", "max_rss_gb", "cycles_per_s", "reference", "others_running",
+                 "folder"]
 
 IMPORTANT = re.compile(
     r"Simulation ->|PASS|FAIL|ERROR|Error|error:|Hit Bad trap|Hit Good trap|timeout happen|"
@@ -102,6 +104,20 @@ def git_info():
     dirty = sh(["git", "status", "--porcelain", "--untracked-files=no"], REPO)
     return {"commit": commit, "branch": branch,
             "uncommitted_changes": len(dirty.splitlines()) if dirty else 0}
+
+
+def machine_load():
+    """Other simulations on this machine (any user) and the load average, to judge
+    whether a run's wall time was slowed by sharing the CPU."""
+    sims = 0
+    for line in sh(["ps", "-eo", "comm="]).splitlines():
+        if line.strip() == "simv":
+            sims += 1
+    try:
+        la = round(os.getloadavg()[0], 1)
+    except OSError:
+        la = None
+    return {"simv": sims, "loadavg": la, "cpus": os.cpu_count()}
 
 
 def parse_mesh(m):
@@ -217,6 +233,12 @@ def render_info(i):
     for h in i.get("roi", []):
         kv("hart %d ROI" % h["hart"], "%s cycles, %s instructions" % (h["cycles"], h["instructions"]))
     kv("num errors", i.get("num_errors"))
+    kv("checksum", i.get("checksum") and "%s (%s)" % (i["checksum"], i.get("reference", "no reference line")))
+    ls, le = i.get("load_at_start") or {}, i.get("load_at_end") or {}
+    if ls:
+        kv("other sims running", "%s at start, %s at end (%s CPUs; load avg %s / %s)"
+           % (ls.get("simv"), le.get("simv", "?"), ls.get("cpus"), ls.get("loadavg"), le.get("loadavg", "?")))
+    kv("batch", i.get("batch"))
     kv("trace", i.get("trace_file") and "%s (%s MB)" % (i["trace_file"], i.get("trace_mb")))
     kv("analysis", ", ".join(i.get("analyses", [])))
     ck = i.get("checkpoint") or {}
@@ -250,6 +272,9 @@ def index_row(i, summ):
         "load_flits_per_cycle": summ.get("injection_rate_flits_per_cycle", ""),
         "trace_mb": i.get("trace_mb"), "elapsed_s": i.get("elapsed_s"),
         "max_rss_gb": i.get("max_rss_gb"), "cycles_per_s": i.get("cycles_per_s"),
+        "reference": i.get("reference", ""),
+        "others_running": max((i.get("load_at_start") or {}).get("simv", 0) or 0,
+                              (i.get("load_at_end") or {}).get("simv", 0) or 0) if i.get("load_at_start") else "",
         "folder": os.path.basename(i["dir"]),
     }
     return row
@@ -357,10 +382,23 @@ def scan_log(path, summary_out):
     return res
 
 
-def parse_uart(path):
+def parse_uart(path, info=None):
+    """ROI counts per hart and "Num Errors" from the program output. With info,
+    also record the AIBench ports' checksum line and whether it matched the
+    original AIBench output."""
     roi, err = [], None
     if os.path.exists(path):
         for line in open(path, errors="replace"):
+            if info is not None:
+                m = re.search(r"^Checksum: (0x[0-9a-f]+)", line)
+                if m:
+                    info["checksum"] = m.group(1)
+                if "matches the original" in line:
+                    info["reference"] = "matches original"
+                elif "DIFFERS from the original" in line:
+                    info["reference"] = "DIFFERS"
+                elif line.startswith("No reference checksum"):
+                    info["reference"] = "none for this size"
             m = re.search(r"hart (\d+): ROI cycles (\d+), instructions (\d+)", line)
             if m:
                 roi.append({"hart": int(m.group(1)), "cycles": int(m.group(2)),
@@ -497,11 +535,12 @@ def cmd_start(a):
         "model_built": datetime.datetime.fromtimestamp(os.path.getmtime(simv)).strftime("%Y-%m-%d %H:%M"),
         "defines": a.define, "trace_desc": trace_desc, "window": a.window,
         "keep_logs": a.keep_logs, "git": git_info(), "host": socket.gethostname(),
-        "started": now(), "note": a.note, "status": "running",
+        "started": now(), "note": a.note, "status": "running", "load_at_start": machine_load(),
         "checkpoint": ({"at": a.save_at, "file": "checkpoint.vcs", "aslr_off": not a.aslr}
                        if a.save_at is not None else None),
         "sims_cmd": " ".join(shlex.quote(s) for s in sims),
         "rerun": " ".join(shlex.quote(s) for s in rerun),
+        "batch": os.environ.get("NOCRUN_BATCH"),
     }
     save_run(d, info)
 
@@ -588,7 +627,7 @@ def cmd_restore(a):
         "vcs_home": os.environ.get("VCS_HOME"),
         "defines": si.get("defines", []), "window": a.window or si.get("window", 10000),
         "keep_logs": a.keep_logs, "git": git_info(), "host": socket.gethostname(),
-        "started": now(), "note": a.note, "status": "running",
+        "started": now(), "note": a.note, "status": "running", "load_at_start": machine_load(),
         "restored_from": si["run"], "checkpoint_used": ck,
         "trace_desc": "as set in %s (window options are fixed when a run starts)" % si["run"],
         "sims_cmd": " ".join(shlex.quote(c) for c in cmd),
@@ -623,8 +662,9 @@ def finish_one(d, a):
     # program output
     if os.path.exists(j("fake_uart.log")):
         shutil.copy(j("fake_uart.log"), j("uart.log"))
-    roi, err = parse_uart(j("uart.log"))
+    roi, err = parse_uart(j("uart.log"), i)
     i["roi"], i["num_errors"] = roi, err
+    i["load_at_end"] = machine_load()
 
     # trace
     tr = None
@@ -860,6 +900,11 @@ def cmd_status(a):
         running.append({"run": i["run"], "state": "running" if alive else "STOPPED (job died; nocrun finish it)",
                         "started": i.get("started"), "trace up to cycle": lc if lc is not None else "",
                         "sims.log MB": mb(os.path.join(d, "sims.log")) or ""})
+    batches = batches_in_progress(root)
+    if batches:
+        print("== batches")
+        table(batches, ["batch", "state", "done", "running", "queued", "at a time"])
+        print()
     print("== in progress (%s)" % root)
     table(running, ["run", "state", "started", "trace up to cycle", "sims.log MB"])
     print()
@@ -874,7 +919,120 @@ def cmd_list(a):
         rows = [r for r in rows if any(a.grep in str(v) for v in r.values())]
     table(rows[-a.n:] if a.n else rows,
           ["run", "status", "build_id", "defines", "sim_cycles", "roi_cycles_max", "num_errors",
-           "packets", "load_flits_per_cycle", "trace_mb", "elapsed_s"])
+           "reference", "packets", "load_flits_per_cycle", "trace_mb", "elapsed_s", "others_running"])
+
+
+# ----------------------------------------------------------------------------- batch
+
+def read_batch_list(path):
+    """One run per line: the arguments you'd give `nocrun start`. # starts a comment."""
+    runs = []
+    for n, line in enumerate(open(path), 1):
+        line = line.split("#", 1)[0].strip()
+        if line:
+            args = shlex.split(line)
+            if "--fg" in args:
+                args.remove("--fg")
+            runs.append({"line": n, "args": args})
+    return runs
+
+
+def cmd_batch(a):
+    """Start a queue of runs, at most -j at a time, in the background."""
+    runs = read_batch_list(a.list)
+    if not runs:
+        die("no runs in %s" % a.list)
+    for need in ("sims",):
+        if not shutil.which(need):
+            die("%s isn't on PATH: source your OpenPiton env script first" % need)
+    # catch typos before anything starts: every program must exist
+    for r in runs:
+        find_program(r["args"][0])
+    root = runs_root(a)
+    name = a.name or re.sub(r"\.\w+$", "", os.path.basename(a.list))
+    bdir = os.path.join(root, "batches", "%s_%s" % (datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S"), name))
+    os.makedirs(bdir)
+    shutil.copy(a.list, os.path.join(bdir, "list.txt"))
+    with open(os.path.join(bdir, "batch.json"), "w") as f:
+        json.dump({"name": name, "jobs": a.jobs, "runs": len(runs), "started": now(),
+                   "list": os.path.abspath(a.list)}, f, indent=1)
+    cmd = [sys.executable, os.path.abspath(__file__), "--runs-dir", root, "_batch-worker", bdir]
+    print("batch folder: %s" % bdir)
+    print("%d runs, %d at a time:" % (len(runs), a.jobs))
+    for r in runs:
+        print("  nocrun start " + " ".join(shlex.quote(x) for x in r["args"]))
+    if a.fg:
+        subprocess.call(cmd)
+        return
+    with open(os.path.join(bdir, "worker.out"), "w") as out:
+        subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                         start_new_session=True, close_fds=True)
+    print("started in the background (safe to log out). Progress:")
+    print("  nocrun status            (the batch, and each run as it starts)")
+    print("  cat %s/batch.log" % bdir)
+    print("Stop the whole batch (its running simulations too):")
+    print("  kill -- -$(cat %s/batch.pid)" % bdir)
+
+
+def cmd_batch_worker(a):
+    """Runs a batch's queue (started by cmd_batch, in its own session)."""
+    import time
+    bdir = a.bdir
+    cfg = json.load(open(os.path.join(bdir, "batch.json")))
+    runs = read_batch_list(os.path.join(bdir, "list.txt"))
+    with open(os.path.join(bdir, "batch.pid"), "w") as f:
+        f.write(str(os.getpid()))
+    log = open(os.path.join(bdir, "batch.log"), "a", buffering=1)
+    log.write("%s batch %s: %d runs, %d at a time\n" % (now(), cfg["name"], len(runs), cfg["jobs"]))
+    env = dict(os.environ, NOCRUN_BATCH=os.path.basename(bdir))
+    queue, active, done = list(enumerate(runs, 1)), [], 0
+    while queue or active:
+        while queue and len(active) < cfg["jobs"]:
+            k, r = queue.pop(0)
+            out = open(os.path.join(bdir, "run%02d.out" % k), "w")
+            cmd = [sys.executable, os.path.abspath(__file__), "--runs-dir", runs_root(a),
+                   "start"] + r["args"] + ["--fg"]
+            p = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env)
+            active.append((k, r, p, out))
+            log.write("%s start  %2d/%d  nocrun start %s\n" % (now(), k, len(runs),
+                                                               " ".join(shlex.quote(x) for x in r["args"])))
+            time.sleep(2)            # so runs of the same program get distinct folders
+        time.sleep(10)
+        still = []
+        for k, r, p, out in active:
+            if p.poll() is None:
+                still.append((k, r, p, out))
+                continue
+            out.close()
+            done += 1
+            txt = open(out.name, errors="replace").read()
+            m = re.search(r"run folder: (\S+)", txt)
+            run = os.path.basename(m.group(1)) if m else None
+            st = re.search(r"^%s: (.*)$" % re.escape(run), txt, re.M) if run else None
+            log.write("%s finish %2d/%d  %s  %s\n" % (now(), k, len(runs), run or "(no run folder)",
+                                                       st.group(1) if st else "exit %s" % p.returncode))
+        active = still
+    log.write("%s batch done\n" % now())
+    os.remove(os.path.join(bdir, "batch.pid"))
+
+
+def batches_in_progress(root):
+    out = []
+    for pidf in sorted(glob.glob(os.path.join(root, "batches", "*", "batch.pid"))):
+        bdir = os.path.dirname(pidf)
+        try:
+            os.kill(int(open(pidf).read().strip()), 0)
+            alive = True
+        except (ValueError, OSError):
+            alive = False
+        cfg = json.load(open(os.path.join(bdir, "batch.json")))
+        logtxt = open(os.path.join(bdir, "batch.log")).read() if os.path.exists(os.path.join(bdir, "batch.log")) else ""
+        started, finished = logtxt.count(" start  "), logtxt.count(" finish ")
+        out.append({"batch": os.path.basename(bdir),
+                    "state": "running" if alive else "STOPPED (worker died)",
+                    "done": "%d/%d" % (finished, cfg["runs"]), "running": started - finished,
+                    "queued": cfg["runs"] - started, "at a time": cfg["jobs"]})
+    return out
 
 
 # ----------------------------------------------------------------------------- main
@@ -962,6 +1120,13 @@ def main(argv=None):
     s.add_argument("--note")
     s.add_argument("-w", "--window", type=int, default=10000)
 
+    s = sub.add_parser("batch", help="start a queue of runs from a list file, N at a time")
+    s.add_argument("list", help="text file: one run per line, written as the arguments to `nocrun start`")
+    s.add_argument("-j", "--jobs", type=int, default=1, help="runs at the same time (default 1: one after another)")
+    s.add_argument("--name", help="batch name (default: the list file's name)")
+    s.add_argument("--fg", action="store_true", help="run the queue in this terminal")
+    s = sub.add_parser("_batch-worker")
+    s.add_argument("bdir")
     s = sub.add_parser("status", help="runs in progress and the latest finished ones")
     s.add_argument("-n", type=int, default=5)
     s = sub.add_parser("reindex", help="rebuild runs.csv from the run folders")
@@ -983,7 +1148,7 @@ def main(argv=None):
         return
     {"start": cmd_start, "finish": cmd_finish, "analyze": cmd_analyze, "compare": cmd_compare,
      "import": cmd_import, "status": cmd_status, "list": cmd_list, "restore": cmd_restore,
-     "reindex": cmd_reindex}[a.cmd](a)
+     "reindex": cmd_reindex, "batch": cmd_batch, "_batch-worker": cmd_batch_worker}[a.cmd](a)
 
 
 if __name__ == "__main__":

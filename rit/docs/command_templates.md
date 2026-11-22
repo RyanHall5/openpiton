@@ -10,7 +10,7 @@ All commands assume a lab account set up per [`rhel9_vcs_setup.md`](rhel9_vcs_se
 **Contents**
 - [Every session](#every-session): [load environment](#load-the-environment) · [get latest code](#get-the-latest-code)
 - [Building](#building): [new build](#build-a-new-model) · [check monitor](#check-a-model-includes-the-trace-monitor) · [clean a failed build](#delete-a-failed-or-outdated-build)
-- [Running](#running): [start a run](#start-a-run) · [check on runs](#check-on-runs) · [checkpoint restore](#continue-a-run-from-its-checkpoint)
+- [Running](#running): [start a run](#start-a-run) · [batch](#start-a-batch-of-runs) · [check on runs](#check-on-runs) · [checkpoint restore](#continue-a-run-from-its-checkpoint)
 - [Analyzing](#analyzing): [window size](#another-window-size) · [compare runs](#compare-runs) · [flits / one NoC / time range](#variants-flits-one-noc-a-time-range)
 - [Looking at results](#looking-at-results)
 - [One-time / occasional](#one-time--occasional): [first-time setup](#first-time-setup-of-an-account) · [self-test](#self-test-no-vcs)
@@ -120,7 +120,7 @@ rm -rf $PITON_ROOT/build/manycore/ariane_2x2
 
 Every run goes through `nocrun`: each run gets its own folder under `~/noc_runs/`, survives logging out, records exactly how it was made, and is analyzed when it ends. Details: [`runs.md`](runs.md).
 
-Test programs are in `$PITON_ROOT/piton/verif/diag/c/riscv/ariane/` (give just the file name; `nocrun` finds it). The benchmarks are in its `rit/` folder: `parsec_blackscholes.c`, `aibench_conv2d.c` ([`../benchmarks/README.md`](../benchmarks/README.md)). Small tests: `hello_world.c`, `hello_world_many.c`, `add_shared_var.c`.
+Test programs are in `$PITON_ROOT/piton/verif/diag/c/riscv/ariane/` (give just the file name; `nocrun` finds it). The benchmarks are in its `rit/` folder: `parsec_blackscholes.c` and `aibench_<kernel>.c` for conv2d, matmul, relu, sigmoid, tanh, max_pool, avg_pool, batch_norm, dropout, multiply, softmax and add ([`../benchmarks/README.md`](../benchmarks/README.md)). Small tests: `hello_world.c`, `hello_world_many.c`, `add_shared_var.c`.
 
 ### Start a run
 
@@ -153,6 +153,28 @@ nocrun start hello_world_many.c --trace-start 50000 --trace-stop 150000 # cycle 
 
 For throwaway runs, put them in another folder so they stay out of your real index: `NOC_RUNS=~/noc_runs_scratch nocrun start ...`
 
+### Start a batch of runs
+
+```bash
+# template
+nocrun batch <list_file> [-j <at_a_time>] [--name <name>]
+```
+
+| Placeholder | Meaning |
+|---|---|
+| `<list_file>` | text file, one run per line, written as the arguments to `nocrun start` (`#` = comment) |
+| `[-j <at_a_time>]` | runs at the same time; default 1 (one after another) |
+| `[--name <name>]` | batch name; default the list file's name |
+
+```bash
+# example: every AIBench port, 2 at a time
+nocrun batch rit/benchmarks/aibench/all.txt -j 2
+# stop a whole batch, including its running simulations
+kill -- -$(cat ~/noc_runs/batches/<batch_folder>/batch.pid)
+```
+
+Results don't depend on how many run at once; wall time does a little ([runs.md](runs.md#what-running-together-does-and-doesnt-change)).
+
 ### Check on runs
 
 ```bash
@@ -162,7 +184,7 @@ cat ~/noc_runs/<run>/run_info.txt      # one run: PASS/FAIL, cycles, ROI per cor
 cat ~/noc_runs/<run>/uart.log          # the program's printf output: Num Errors, ROI cycles
 ```
 
-**Success:** `status` is `PASS`, `uart.log` ends with `Num Errors: 0`, and `run_info.txt` lists a trace and `analysis: w10000`.
+**Success:** `status` is `PASS`, `uart.log` ends with `Num Errors: 0`, and `run_info.txt` lists a trace and `analysis: w10000`. AIBench ports at their default size also show `checksum: 0x... (matches original)`.
 
 ### Continue a run from its checkpoint
 
