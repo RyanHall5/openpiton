@@ -2,21 +2,25 @@
 
 Bare-metal ports of the benchmarks the team picked for comparison with the Genesys2 FPGA: PARSEC blackscholes and the AIBench Micro kernels (Pthreads versions). Parsa and Denis run the same C files on the board, so sim and FPGA run identical code.
 
-| Program | Benchmark | Default input | ROI instructions per hart (QEMU, 2 harts) |
-|---|---|---|---|
-| `parsec_blackscholes.c` | PARSEC 3.0 blackscholes | 4096 options (simsmall), 1 run | ~0.9 M |
-| `aibench_conv2d.c` | AIBench DC-AI-M1 Convolution | 1 x 227x227 NCHW, 3x3x3x2 filter | 6.8 M |
-| `aibench_matmul.c` | DC-AI-M2 Fully Connected (matrix multiply) | 1 x 64x64 NHWC: [64x192]·[192x64] | 2.8 M |
-| `aibench_relu.c` | DC-AI-M3 ReLU | 1 x 227x227 NHWC | 0.39 M |
-| `aibench_sigmoid.c` | DC-AI-M4 Sigmoid | 1 x 227x227 NHWC | 3.5 M |
-| `aibench_tanh.c` | DC-AI-M5 Tanh | 1 x 227x227 NHWC | 2.5 M |
-| `aibench_max_pool.c` | DC-AI-M6 MaxPooling | 2 x 227x227 NCHW, 3x3, stride 2 | 5.0 M |
-| `aibench_avg_pool.c` | DC-AI-M7 AvgPooling | 2 x 227x227 NCHW, 3x3, stride 2 | 4.6 M |
-| `aibench_batch_norm.c` | DC-AI-M9 BatchNorm | 2 x 227x227 NHWC | 1.9 M |
-| `aibench_dropout.c` | DC-AI-M10 Dropout | 1 x 32x32 NHWC | ~12 M (mostly the reseeding, see below) |
-| `aibench_multiply.c` | DC-AI-M11 Element-wise multiply | 1 x 227x227 NHWC | 0.62 M |
-| `aibench_softmax.c` | DC-AI-M12 Softmax | 1 x 227x227 NHWC | 3.4 M |
-| `aibench_add.c` | element-wise add (in AIBench's Pthreads folder, not one of the 12) | 1 x 227x227 NHWC | 0.62 M |
+| Program | Benchmark | AIBench source | Default input | ROI instructions per hart (QEMU, 2 harts) |
+|---|---|---|---|---|
+| **`rit/parsec/`** | | | | |
+| `parsec_blackscholes.c` | PARSEC 3.0 blackscholes | | 4096 options (simsmall), 1 run | ~0.9 M |
+| **`rit/aibench/micro/`** | **AIBench Micro (DC-AI-M)** | | | |
+| `aibench_convolution.c` | M1 Convolution | conv2d | 1 x 227x227 NCHW, 3x3x3x2 filter | 6.8 M |
+| `aibench_fully_connected.c` | M2 Fully Connected (matrix multiply) | matmul | 1 x 64x64 NHWC: [64x192]·[192x64] | 2.8 M |
+| `aibench_relu.c` | M3 ReLU | relu | 1 x 227x227 NHWC | 0.39 M |
+| `aibench_sigmoid.c` | M4 Sigmoid | sigmoid | 1 x 227x227 NHWC | 3.5 M |
+| `aibench_tanh.c` | M5 Tanh | tanh | 1 x 227x227 NHWC | 2.5 M |
+| `aibench_max_pooling.c` | M6 MaxPooling | max_pool | 2 x 227x227 NCHW, 3x3, stride 2 | 5.0 M |
+| `aibench_avg_pooling.c` | M7 AvgPooling | avg_pool | 2 x 227x227 NCHW, 3x3, stride 2 | 4.6 M |
+| `aibench_batch_norm.c` | M9 BatchNorm | batch_norm | 2 x 227x227 NHWC | 1.9 M |
+| `aibench_dropout.c` | M10 Dropout | dropout | 1 x 32x32 NHWC | ~12 M (mostly the reseeding, see below) |
+| `aibench_element_multiply.c` | M11 Element-wise multiply | multiply | 1 x 227x227 NHWC | 0.62 M |
+| `aibench_softmax.c` | M12 Softmax | softmax | 1 x 227x227 NHWC | 3.4 M |
+| `aibench_element_add.c` | element-wise add (in AIBench's Pthreads folder, not one of the 12) | add | 1 x 227x227 NHWC | 0.62 M |
+
+**Names:** files are grouped by suite and category (`rit/<suite>/<category>/`) and named `<suite>_<benchmark>.c` with the benchmark's own name. The suite prefix is there because sims finds a program by its file name alone anywhere under `piton/verif/diag`, and refuses to run if two files share a name. New suites get their own folder (e.g. `rit/aibench/component/`). Results land in the matching folder automatically (`~/noc_runs/baremetal/aibench_micro/...`, see [runs.md](../docs/runs.md#where-results-go)). Until 2026-11-22 some files had AIBench's source names (`aibench_conv2d.c`, `aibench_matmul.c`, ...).
 
 AIBench's DC-AI-M8 (CosineNorm) has no Pthreads version, so there's nothing to port.
 
@@ -28,8 +32,11 @@ Every port runs one thread per hart, splits the work the way the pthreads code d
 
 ```
 piton/verif/diag/c/riscv/ariane/rit/
-├── parsec_blackscholes.c      PARSEC kernel unchanged + bare-metal scaffolding
-└── aibench_<kernel>.c         one per AIBench kernel: the original loop + scaffolding
+├── parsec/
+│   └── parsec_blackscholes.c  PARSEC kernel unchanged + bare-metal scaffolding
+└── aibench/
+    └── micro/
+        └── aibench_<name>.c   one per AIBench Micro kernel: the original loop + scaffolding
 piton/verif/diag/assembly/include/riscv/ariane/rit/
 ├── bench.h                    ROI markers, barrier, cycle counters, fixed-point print
 ├── aibench.h                  shared by the AIBench ports: input, job split, ROI, lock, checksum
@@ -38,15 +45,15 @@ piton/verif/diag/assembly/include/riscv/ariane/rit/
 ├── mathf.h                    expf() and tanhf() (sigmoid, softmax, tanh; musl)
 └── bs_option_data.h           PARSEC's option table (generated)
 rit/benchmarks/
-├── README.md                  you are here
-├── aibench/all.txt            the AIBench ports as a nocrun batch list
-├── aibench/check_ports.sh     compares every port with the ORIGINAL AIBench code (x86 + QEMU)
-├── aibench/aib_host.cpp       runs an original AIBench kernel on x86 (used by check_ports.sh)
-├── aibench/host/loadImage.h   stand-in for AIBench's OpenCV image loader
-├── aibench/test_mathf.c       expf/tanhf against glibc on all 2^32 inputs
-├── aibench/test_rand.c        aib_rand.h against glibc's rand()
-├── blackscholes/gen_option_data.py   regenerates bs_option_data.h from a PARSEC input file
-└── qemu/run_qemu.sh           functional check in QEMU before spending hours in VCS
+├── README.md                        you are here
+├── aibench/micro/all.txt            the AIBench Micro ports as a nocrun batch list
+├── aibench/micro/check_ports.sh     compares every port with the ORIGINAL AIBench code (x86 + QEMU)
+├── aibench/micro/aib_host.cpp       runs an original AIBench kernel on x86 (used by check_ports.sh)
+├── aibench/micro/host/loadImage.h   stand-in for AIBench's OpenCV image loader
+├── aibench/micro/test_mathf.c       expf/tanhf against glibc on all 2^32 inputs
+├── aibench/micro/test_rand.c        aib_rand.h against glibc's rand()
+├── parsec/blackscholes/gen_option_data.py   regenerates bs_option_data.h from a PARSEC input file
+└── qemu/run_qemu.sh                 functional check in QEMU before spending hours in VCS
 ```
 
 The programs live under `verif/diag` because that's where `sims` looks for tests; the headers sit in the Ariane include directory because `sims` copies the test file into the run directory before compiling it, so the include path is the only way to reach them.
@@ -70,11 +77,11 @@ The programs aren't part of the model, so adding or changing a benchmark doesn't
 Tiny inputs, to check each program compiles, links and passes before the long runs:
 
 ```bash
-nocrun start parsec_blackscholes.c -D NUM_OPTIONS=16 --name bs16 --fg
-nocrun start aibench_relu.c -D IMG_H=16 -D IMG_W=16 --name relu16 --fg
+nocrun start parsec_blackscholes.c -D NUM_OPTIONS=16 --name bs16 --scratch --fg
+nocrun start aibench_relu.c -D IMG_H=16 -D IMG_W=16 --name relu16 --scratch --fg
 ```
 
-Any `aibench_*.c` works the same way with `-D IMG_H=16 -D IMG_W=16` (dropout: 8x8).
+Any `aibench_*.c` works the same way with `-D IMG_H=16 -D IMG_W=16` (dropout: 8x8). `--scratch` keeps these out of your real results (`~/noc_runs/scratch/`, its own index).
 
 **Pass looks like:** `status: PASS` and `num errors: 0` in the `run_info.txt` printed at the end. `sims_summary.log` has `noc_trace_mon: window opened at cycle N` and `closed at cycle M`. If the compile fails, `program/rv64_cc.log` has the compiler output.
 
@@ -83,8 +90,8 @@ Any `aibench_*.c` works the same way with `-D IMG_H=16 -D IMG_W=16` (dropout: 8x
 One at a time, or all of them as a batch:
 
 ```bash
-nocrun start aibench_sigmoid.c
-nocrun batch rit/benchmarks/aibench/all.txt -j 2      # all 11 AIBench ports, 2 at a time
+nocrun start aibench_sigmoid.c          # -> ~/noc_runs/baremetal/aibench_micro/<date>_sigmoid_2x1_r1/
+nocrun batch rit/benchmarks/aibench/micro/all.txt -j 2   # all 12 AIBench Micro ports, 2 at a time
 nocrun status
 ```
 
@@ -95,9 +102,9 @@ See [runs.md: Running several at once](../docs/runs.md#running-several-at-once) 
 | | ROI cycles per hart | whole run | wall time |
 |---|---|---|---|
 | blackscholes simsmall, 1 run | 2.03–2.09 M | 3.3 M cycles | 20 min |
-| conv2d 227x227 | 13.4 M (7.8 M instructions) | 46.3 M cycles | 4.0 h |
+| convolution 227x227 | 13.4 M (7.8 M instructions) | 46.3 M cycles | 4.0 h |
 
-The simulator runs about 3,000–4,500 cycles/s, slower while the NoC is busy. The other AIBench ports should take 1–4 hours each (estimates in `aibench/all.txt`); update this table as they finish.
+The simulator runs about 3,000–4,500 cycles/s, slower while the NoC is busy. The other AIBench ports should take 1–4 hours each (estimates in `aibench/micro/all.txt`); update this table as they finish.
 
 ### 4. Check the results
 
@@ -122,6 +129,7 @@ Each run is analyzed at a 10,000-cycle window when it ends (`<run>/analysis/w100
 ```bash
 nocrun analyze sigmoid -w 80000
 nocrun compare relu sigmoid tanh -w 20000
+nocrun list --suite aibench_micro          # just these runs
 ```
 
 Cycles count from the ROI start.
@@ -167,7 +175,7 @@ What they replace is what needs an operating system, and each replacement is cho
 | glibc `srand`/`rand` (dropout) | `aib_rand.h`: glibc's algorithm, shared state, one lock | identical numbers and the same shared state |
 | `time(NULL)` (dropout) | one load of a fixed variable | glibc reads the vDSO time page: also just loads |
 | `std::exp`/`std::tanh` on floats | `mathf.h`: musl's `expf` (same algorithm as glibc) and `tanhf` | table of 32 entries; identical results on the inputs used |
-| `std::vector` per row (conv2d, pools, batch_norm) | flat arrays | no per-row pointer loads; same elements in the same order |
+| `std::vector` per row (convolution, pooling, batch_norm) | flat arrays | no per-row pointer loads; same elements in the same order |
 | C++ at `-O0` | C at `-O2` (what `sims` uses) | fewer instructions, so the same traffic arrives faster |
 
 Two compiler details keep the arithmetic identical to the original: multiply and add stay separate instructions (`#pragma GCC optimize ("fp-contract=off")`, as at `-O0`; a fused multiply-add rounds differently), and the same float types are used throughout.
@@ -184,7 +192,7 @@ Two compiler details keep the arithmetic identical to the original: multiply and
 - **batch_norm:** normalizes `scale·(x − mean)/variance + offset` with mean 0, variance 1, offset 1, scale 1, epsilon 1, as `thread_Batch_norm()` sets them up. Mean and variance are arrays read for every pixel.
 - **max_pool, avg_pool:** NCHW, 3x3 windows, stride 2, SAME padding (`run-pthread.sh` and the originals' `main()`). The innermost loop is over channels, so consecutive windows jump between the three channel planes. avg_pool always divides by 9, also at the padded edges, as the original.
 - **batch_norm, max_pool, avg_pool:** jobs are whole images, so with one image only the last thread would work; the default batch is 2 (one image per hart).
-- **conv2d:** see its file header. Ported before the others: same rules, but without the `fp-contract` pragma (its sums are exact integers either way) and without a built-in reference checksum (its own check recomputes every pixel).
+- **convolution** (AIBench `conv2d`): see its file header. Ported before the others: same rules, but without the `fp-contract` pragma (its sums are exact integers either way) and without a built-in reference checksum (its own check recomputes every pixel).
 
 ### blackscholes
 
@@ -202,8 +210,8 @@ Two compiler details keep the arithmetic identical to the original: multiply and
 4. **In every run:** the recomputation after the ROI and the built-in reference checksum (see [Check the results](#4-check-the-results)).
 
 ```bash
-AIBENCH=~/DC_AIBench_Micro rit/benchmarks/aibench/check_ports.sh            # all kernels, ~1 minute
-AIBENCH=~/DC_AIBench_Micro rit/benchmarks/aibench/check_ports.sh matmul     # one
+AIBENCH=~/DC_AIBench_Micro rit/benchmarks/aibench/micro/check_ports.sh            # all kernels, ~1 minute
+AIBENCH=~/DC_AIBench_Micro rit/benchmarks/aibench/micro/check_ports.sh matmul     # one (AIBench source name)
 ```
 
 These need g++, `riscv64-unknown-elf-gcc` and `qemu-system-riscv64` (not on the lab machines; any Linux box or WSL), and AIBench: `git clone https://github.com/BenchCouncil/DC_AIBench_Micro` (the ports are from commit fb2e73d).
@@ -223,7 +231,7 @@ These runs give NoC traffic for the benchmark kernel on the same hardware (OpenP
 
 ```bash
 rit/benchmarks/qemu/run_qemu.sh aibench_relu.c 2
-QEMU_ICOUNT=1 rit/benchmarks/qemu/run_qemu.sh aibench_conv2d.c 2      # ROI counts = instructions
+QEMU_ICOUNT=1 rit/benchmarks/qemu/run_qemu.sh aibench_convolution.c 2      # ROI counts = instructions
 ```
 
 QEMU isn't cycle-accurate and has no NoC, so it only answers "does it build, run on N harts and get the right answer". Instruction counts with `QEMU_ICOUNT=1` are exact (except where a hart spins waiting), which is a good basis for estimating sim time. `QEMU_KEEP=1` keeps the build folder; `QEMU_ARGS=...` passes extra options to QEMU (e.g. `-d int` to log traps).
@@ -231,9 +239,9 @@ QEMU isn't cycle-accurate and has no NoC, so it only answers "does it build, run
 ## Porting another benchmark
 
 1. **Find the region of interest:** the compute the benchmark exists to measure, separate from file reading, setup and thread management.
-2. **Copy that code unchanged** into `piton/verif/diag/c/riscv/ariane/rit/<suite>_<name>.c`, as C. Keep variable names and loop order so it can be compared line by line.
+2. **Copy that code unchanged** into `piton/verif/diag/c/riscv/ariane/rit/<suite>/<category>/<suite>_<name>.c`, as C (the folders decide where its results go). Keep variable names and loop order so it can be compared line by line.
 3. **Replace the OS parts** using `rit/bench.h` and `rit/aibench.h`: input built in memory by hart 0, each hart runs its thread's share (`aib_range`), barriers instead of create/join, `aib_lock` for mutexes. For each replacement ask what memory traffic the original part makes and keep it (shared variables stay shared, a lock stays a lock).
 4. **Mark the ROI** with `aib_roi_begin`/`aib_roi_end` (or `noc_roi_begin`/`noc_roi_end`), and check the output after it.
 5. **Verify against the original:** build the original on x86 with the same input and compare outputs (`aibench/aib_host.cpp` and `check_ports.sh` show how), on 1, 2 and more threads.
 6. **Size it:** `QEMU_ICOUNT=1` gives instructions per hart; at roughly 2 cycles per instruction and 3,000–4,500 cycles/s, pick an input that runs in hours, not days.
-7. **Smoke test on the model** with a tiny input, then the full run.
+7. **Smoke test on the model** with a tiny input (`--scratch`), then the full run.

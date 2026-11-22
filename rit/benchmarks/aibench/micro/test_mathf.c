@@ -1,5 +1,5 @@
 // Compare rit/mathf.h's expf/tanhf with the host libm (glibc) on every float.
-//   gcc -O2 -ffp-contract=off rit/benchmarks/aibench/test_mathf.c -I piton/verif/diag/assembly/include/riscv/ariane -lm
+//   gcc -O2 -ffp-contract=off rit/benchmarks/aibench/micro/test_mathf.c -I piton/verif/diag/assembly/include/riscv/ariane -lm
 // Prints how many inputs differ and the largest difference in ulps, then the
 // results for the integer inputs 0..255 (the values the AIBench ports use).
 #include <math.h>

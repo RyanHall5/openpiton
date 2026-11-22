@@ -7,17 +7,24 @@
 # input, and compare the output checksums. A match means every output value
 # is bit-for-bit the same as the original's.
 #
-#   usage: AIBENCH=<DC_AIBench_Micro clone> rit/benchmarks/aibench/check_ports.sh [kernel ...]
+#   usage: AIBENCH=<DC_AIBench_Micro clone> rit/benchmarks/aibench/micro/check_ports.sh [kernel ...]
+# Kernels are named as in AIBench's source (relu, max_pool, matmul, ...); the
+# port of each is the file in PORT below.
 #
 # Needs g++, riscv64-unknown-elf-gcc and qemu-system-riscv64 (not on the lab
 # machines; any Linux box or WSL). Get AIBench with
 #   git clone https://github.com/BenchCouncil/DC_AIBench_Micro
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO=$(cd "$HERE/../../.." && pwd)
+REPO=$(cd "$HERE/../../../.." && pwd)
 SRC=${AIBENCH:?set AIBENCH to a DC_AIBench_Micro clone}/Pthread/Pthread
 [ -f "$SRC/relu.h" ] || { echo "no AIBench Pthread sources in $SRC"; exit 1; }
 KERNELS=${*:-relu sigmoid tanh softmax dropout add multiply matmul batch_norm max_pool avg_pool}
+declare -A PORT=( [relu]=aibench_relu.c [sigmoid]=aibench_sigmoid.c [tanh]=aibench_tanh.c
+                  [softmax]=aibench_softmax.c [dropout]=aibench_dropout.c [add]=aibench_element_add.c
+                  [multiply]=aibench_element_multiply.c [matmul]=aibench_fully_connected.c
+                  [batch_norm]=aibench_batch_norm.c [max_pool]=aibench_max_pooling.c
+                  [avg_pool]=aibench_avg_pooling.c )
 
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 cp "$SRC"/*.h "$SRC"/*.cpp "$W/"
@@ -37,7 +44,7 @@ for k in $KERNELS; do
         IFS=: read -r b h w <<< "$sz"
         for t in 1 2 3 4; do
             want=$("$W/host_$k" $b $h $w $t 2>/dev/null | grep -o 'Checksum: 0x[0-9a-f]*' | tail -1)
-            out=$(QEMU_TIMEOUT=600 "$REPO/rit/benchmarks/qemu/run_qemu.sh" aibench_$k.c $t -DBATCH=$b -DIMG_H=$h -DIMG_W=$w 2>&1)
+            out=$(QEMU_TIMEOUT=600 "$REPO/rit/benchmarks/qemu/run_qemu.sh" ${PORT[$k]} $t -DBATCH=$b -DIMG_H=$h -DIMG_W=$w 2>&1)
             got=$(grep -o 'Checksum: 0x[0-9a-f]*' <<< "$out" | tail -1)
             errs=$(grep -o 'Num Errors: [0-9]*' <<< "$out" | tail -1)
             if [ "$k" = dropout ] && [ $t -gt 1 ]; then

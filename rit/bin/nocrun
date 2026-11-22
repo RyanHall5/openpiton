@@ -11,9 +11,13 @@
     nocrun reindex                         rebuild runs.csv from the run folders
     nocrun restore RUN [options]           continue a run from its checkpoint (start --save-at N)
     nocrun batch   LIST [-j N]             start a queue of runs, N at a time (detached)
+    nocrun reorganize [--yes]              move runs from the old flat layout into <env>/<suite>/
 
-Every run gets a folder  $NOC_RUNS/<date>_<name>_<mesh>_r<N>/  (NOC_RUNS defaults to
-~/noc_runs). sims runs inside it, so files that sims overwrites (sims.log, diag.c,
+Every run gets a folder  $NOC_RUNS/<env>/<suite>/<date>_<name>_<mesh>_r<N>/  (NOC_RUNS
+defaults to ~/noc_runs; env is "baremetal" for these programs, suite comes from where the
+program lives: rit/aibench/micro/... -> aibench_micro, rit/parsec/... -> parsec). With
+--scratch the same layout goes under $NOC_RUNS/scratch/, with its own index, for smoke tests
+and experiments. sims runs inside the run folder, so files that sims overwrites (sims.log, diag.c,
 fake_uart.log, ...) can't collide with another run. When the run ends, the folder is
 tidied up:
 
@@ -26,7 +30,7 @@ tidied up:
     analysis/w<N>/    noctrace results for window/bin size N (one folder per size)
     logs/             only with --keep-logs: full sims.log and instruction traces, gzipped
 
-and a row is added to $NOC_RUNS/runs.csv. The full sims.log and Ariane's per-instruction
+and a row is added to the index, $NOC_RUNS/runs.csv (or scratch/runs.csv). The full sims.log and Ariane's per-instruction
 traces (trace_hart_*.log, ~1 GB per million cycles together) are not kept unless
 --keep-logs is given.
 
@@ -50,6 +54,10 @@ from collections import deque
 
 RIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.path.dirname(RIT)
+# benchmark programs live in suite/category folders under here; the folders name the
+# results folder (rit/aibench/micro/x.c -> <env>/aibench_micro/)
+RIT_DIAG = os.path.join(REPO, "piton", "verif", "diag", "c", "riscv", "ariane", "rit")
+TOP_DIRS = ("scratch", "batches", "compare")   # in the runs folder, not run folders
 VERSION = 1
 
 # VCS checkpoints ($save / simv -r) are an image of the simulator process. With
@@ -60,7 +68,7 @@ VERSION = 1
 # (setarch -R; no root needed).
 NOASLR = "setarch $(uname -m) -R "
 
-RUNS_CSV_COLS = ["run", "date", "program", "mesh", "build_id", "defines", "status",
+RUNS_CSV_COLS = ["run", "date", "env", "suite", "program", "mesh", "build_id", "defines", "status",
                  "sim_cycles", "roi_cycles_max", "roi_instructions_max", "num_errors",
                  "packets", "injected_flits", "load_flits_per_cycle", "trace_mb",
                  "elapsed_s", "max_rss_gb", "cycles_per_s", "reference", "others_running",
@@ -80,10 +88,49 @@ def die(msg):
     sys.exit(1)
 
 
-def runs_root(a=None):
+def top_root(a=None):
     d = (getattr(a, "runs_dir", None) if a else None) or os.environ.get("NOC_RUNS") \
         or os.path.expanduser("~/noc_runs")
     return os.path.abspath(d)
+
+
+def runs_root(a=None):
+    """The runs folder this command works in: $NOC_RUNS, or $NOC_RUNS/scratch with --scratch.
+    Each has its own index (runs.csv)."""
+    t = top_root(a)
+    return os.path.join(t, "scratch") if getattr(a, "scratch", False) else t
+
+
+def program_suite(prog_path):
+    """Results subfolder for a program: its folders under rit/ joined with '_'
+    (rit/aibench/micro/aibench_relu.c -> aibench_micro, rit/parsec/... -> parsec).
+    Programs elsewhere (hello_world.c, ...) -> 'other'."""
+    rel = os.path.relpath(os.path.dirname(os.path.abspath(prog_path)), RIT_DIAG)
+    if rel.startswith(".."):
+        return "other"
+    return "rit" if rel == "." else rel.replace(os.sep, "_")
+
+
+def all_run_dirs(root):
+    """Every run folder in a runs folder: <env>/<suite>/<run>/ and, from before the
+    reorganization, <run>/ directly in it."""
+    out = []
+    for jp in glob.glob(os.path.join(root, "*", "*", "*", "run.json")) + glob.glob(os.path.join(root, "*", "run.json")):
+        d = os.path.dirname(jp)
+        if os.path.relpath(d, root).split(os.sep)[0] in TOP_DIRS:
+            continue
+        out.append(d)
+    return sorted(out, key=os.path.basename)
+
+
+def index_root(d, i=None):
+    """The runs folder (with runs.csv) a run folder belongs to."""
+    i = i or {}
+    if i.get("runs_root"):
+        return i["runs_root"]
+    if i.get("env") and i.get("suite"):
+        return os.path.dirname(os.path.dirname(os.path.dirname(d)))
+    return os.path.dirname(d)
 
 
 def now():
@@ -133,21 +180,26 @@ def short_name(program):
     return re.sub(r"^(parsec_|aibench_)", "", stem)
 
 
-def next_round(root, name, mesh):
+def next_round(sdir, name, mesh):
     rs = [0]
-    for d in glob.glob(os.path.join(root, "*_%s_%s_r*" % (name, mesh))):
-        m = re.search(r"_r(\d+)$", d)
+    for d in glob.glob(os.path.join(sdir, "*_%s_%s_r*" % (name, mesh))):
+        m = re.fullmatch(r"\d{4}-\d\d-\d\d_%s_%s_r(\d+)" % (re.escape(name), re.escape(mesh)), os.path.basename(d))
         if m:
             rs.append(int(m.group(1)))
     return max(rs) + 1
 
 
-def new_run_dir(root, date, name, mesh):
-    os.makedirs(root, exist_ok=True)
-    r = next_round(root, name, mesh)
-    d = os.path.join(root, "%s_%s_%s_r%d" % (date, name, mesh, r))
-    os.makedirs(d)
-    return d, r
+def new_run_dir(root, env, suite, date, name, mesh):
+    sdir = os.path.join(root, env, suite)
+    os.makedirs(sdir, exist_ok=True)
+    while True:
+        r = next_round(sdir, name, mesh)
+        d = os.path.join(sdir, "%s_%s_%s_r%d" % (date, name, mesh, r))
+        try:
+            os.makedirs(d)
+            return d, r
+        except FileExistsError:      # another run of the same name started at the same moment
+            continue
 
 
 def check_vcs(simv):
@@ -206,6 +258,8 @@ def render_info(i):
     kv("program", i.get("program"))
     kv("program path", i.get("program_path"))
     kv("name / round", "%s / r%s" % (i.get("name"), i.get("round")))
+    kv("env / suite", i.get("env") and "%s / %s" % (i["env"], i.get("suite")))
+    kv("renamed from", i.get("renamed_from"))
     kv("mesh", i.get("mesh"))
     kv("model (build_id)", i.get("build_id"))
     kv("model built", i.get("model_built"))
@@ -261,7 +315,8 @@ def render_info(i):
 def index_row(i, summ):
     roi = i.get("roi", [])
     row = {
-        "run": i["run"], "date": i["run"][:10], "program": i.get("program"),
+        "run": i["run"], "date": i["run"][:10], "env": i.get("env", ""), "suite": i.get("suite", ""),
+        "program": i.get("program"),
         "mesh": i.get("mesh"), "build_id": i.get("build_id"),
         "defines": " ".join(i.get("defines", [])), "status": i.get("status"),
         "sim_cycles": i.get("sim_cycles"),
@@ -306,8 +361,7 @@ def cmd_reindex(a):
     """Rebuild runs.csv from the run folders' run.json files."""
     root = runs_root(a)
     rows = []
-    for jp in sorted(glob.glob(os.path.join(root, "*", "run.json"))):
-        d = os.path.dirname(jp)
+    for d in all_run_dirs(root):
         try:
             i = load_run(d)
         except SystemExit:
@@ -463,8 +517,9 @@ def cmd_start(a):
     program = os.path.basename(prog_path)
     name = a.name or short_name(program)
     root = runs_root(a)
+    env, suite = "baremetal", program_suite(prog_path)
     date = datetime.date.today().isoformat()
-    d, rnd = new_run_dir(root, date, name, a.mesh)
+    d, rnd = new_run_dir(root, env, suite, date, name, a.mesh)
     ntiles = x * y
     mask = a.finish_mask or hex(sum(1 << (4 * t) for t in range(ntiles)))
     if a.rtl_timeout is None:
@@ -507,6 +562,8 @@ def cmd_start(a):
     sims += a.sims_arg
 
     rerun = ["nocrun", "start", program, "--mesh", a.mesh, "--build-id", build_id]
+    if getattr(a, "scratch", False):
+        rerun.append("--scratch")
     for dfn in a.define:
         rerun += ["-D", dfn]
     if a.name:
@@ -529,6 +586,7 @@ def cmd_start(a):
 
     info = {
         "nocrun_version": VERSION, "run": os.path.basename(d), "dir": d, "name": name,
+        "env": env, "suite": suite, "runs_root": root,
         "round": rnd, "app": a.app or name[:1].upper() + name[1:], "program": program,
         "program_path": os.path.relpath(prog_path, REPO), "mesh": a.mesh, "tiles": ntiles,
         "build_id": build_id, "vcs_home": os.environ.get("VCS_HOME"), "model_vcs": vcs_built,
@@ -614,13 +672,15 @@ def cmd_restore(a):
         print("warning: model %s was rebuilt after this checkpoint was saved; the restore will "
               "probably fail. A checkpoint only works with the exact simv that wrote it." % si["build_id"])
     name = a.name or si["name"]
-    root = runs_root(a)
-    d, rnd = new_run_dir(root, datetime.date.today().isoformat(), name, si["mesh"])
+    root = index_root(src, si)
+    env, suite = si.get("env", "baremetal"), si.get("suite", "other")
+    d, rnd = new_run_dir(root, env, suite, datetime.date.today().isoformat(), name, si["mesh"])
     plus = [] if a.no_trace else ["+noc_trace_file=trace.csv"]
     plus += a.sim_arg
     cmd = [simv, "-r", ck] + plus
     info = {
         "nocrun_version": VERSION, "run": os.path.basename(d), "dir": d, "name": name, "round": rnd,
+        "env": env, "suite": suite, "runs_root": root,
         "app": a.app or si.get("app") or name, "program": si.get("program"),
         "program_path": si.get("program_path"), "mesh": si["mesh"], "tiles": si.get("tiles", 1),
         "build_id": si["build_id"], "model_built": si.get("model_built"),
@@ -728,7 +788,7 @@ def finish_one(d, a):
     if tr and not getattr(a, "no_analysis", False):
         analyze_one(d, i.get("window", 10000), None, [], quiet=True)
         i = load_run(d)
-    append_runs_csv(os.path.dirname(d), i, summary_json(d))
+    append_runs_csv(index_root(d, i), i, summary_json(d))
     if os.path.exists(j("job.pid")):
         os.remove(j("job.pid"))
     print("%s: %s" % (i["run"], i["status"]))
@@ -777,7 +837,8 @@ def resolve_run(d, a):
     p = os.path.join(runs_root(a), d)
     if os.path.isdir(p):
         return p
-    hits = glob.glob(os.path.join(runs_root(a), "*%s*" % d))
+    dirs = all_run_dirs(runs_root(a))
+    hits = [x for x in dirs if os.path.basename(x) == d] or [x for x in dirs if d in os.path.basename(x)]
     if len(hits) == 1:
         return hits[0]
     die("no run folder %r%s" % (d, (" (matches: %s)" % ", ".join(map(os.path.basename, hits))) if hits else ""))
@@ -792,7 +853,7 @@ def cmd_compare(a):
     for t in traces:
         if not os.path.exists(t):
             die("no trace in %s" % os.path.dirname(t))
-    out = a.out or os.path.join(runs_root(a), "compare",
+    out = a.out or os.path.join(top_root(a), "compare",
                                 datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "_w%d" % a.window)
     cmd = [sys.executable, "-m", "noctrace"] + traces + ["-o", out, "--bin", str(a.window),
                                                          "--window", str(a.window)]
@@ -816,10 +877,13 @@ def cmd_import(a):
         die("no such trace %s" % a.trace)
     root = runs_root(a)
     date = a.date or datetime.datetime.fromtimestamp(os.path.getmtime(a.trace)).date().isoformat()
-    d, rnd = new_run_dir(root, date, a.name, a.mesh)
+    suite = a.suite or (program_suite(find_program(a.program)) if a.program else "other")
+    env = a.env
+    d, rnd = new_run_dir(root, env, suite, date, a.name, a.mesh)
     j = lambda *p: os.path.join(d, *p)  # noqa: E731
     info = {
         "nocrun_version": VERSION, "run": os.path.basename(d), "dir": d, "name": a.name,
+        "env": env, "suite": suite, "runs_root": root,
         "round": rnd, "app": a.app or a.name[:1].upper() + a.name[1:],
         "program": a.program, "mesh": a.mesh, "build_id": a.build_id, "defines": a.define,
         "window": a.window, "imported": True,
@@ -882,7 +946,8 @@ def last_trace_cycle(d):
 def cmd_status(a):
     root = runs_root(a)
     running = []
-    for d in sorted(glob.glob(os.path.join(root, "*_r*"))):
+    roots = [root] + ([os.path.join(root, "scratch")] if not getattr(a, "scratch", False) else [])
+    for d in [x for r in roots for x in all_run_dirs(r)]:
         pidf = os.path.join(d, "job.pid")
         if not os.path.exists(pidf):
             continue
@@ -897,29 +962,33 @@ def cmd_status(a):
             os.remove(pidf)          # finished, but its job was interrupted before cleaning up
             continue
         lc = last_trace_cycle(d)
-        running.append({"run": i["run"], "state": "running" if alive else "STOPPED (job died; nocrun finish it)",
+        running.append({"run": i["run"], "where": os.path.relpath(os.path.dirname(d), root), "state": "running" if alive else "STOPPED (job died; nocrun finish it)",
                         "started": i.get("started"), "trace up to cycle": lc if lc is not None else "",
                         "sims.log MB": mb(os.path.join(d, "sims.log")) or ""})
-    batches = batches_in_progress(root)
+    batches = batches_in_progress(top_root(a))
     if batches:
         print("== batches")
         table(batches, ["batch", "state", "done", "running", "queued", "at a time"])
         print()
     print("== in progress (%s)" % root)
-    table(running, ["run", "state", "started", "trace up to cycle", "sims.log MB"])
+    table(running, ["run", "where", "state", "started", "trace up to cycle", "sims.log MB"])
     print()
     print("== last finished")
-    table(read_index(root)[-a.n:], ["run", "status", "sim_cycles", "roi_cycles_max", "num_errors",
-                                    "packets", "elapsed_s"])
+    table(read_index(root)[-a.n:], ["run", "suite", "status", "sim_cycles", "roi_cycles_max", "num_errors",
+                                    "reference", "elapsed_s"])
 
 
 def cmd_list(a):
     rows = read_index(runs_root(a))
+    if a.suite:
+        rows = [r for r in rows if r.get("suite") == a.suite]
+    if a.env:
+        rows = [r for r in rows if r.get("env") == a.env]
     if a.grep:
         rows = [r for r in rows if any(a.grep in str(v) for v in r.values())]
     table(rows[-a.n:] if a.n else rows,
-          ["run", "status", "build_id", "defines", "sim_cycles", "roi_cycles_max", "num_errors",
-           "reference", "packets", "load_flits_per_cycle", "trace_mb", "elapsed_s", "others_running"])
+          ["run", "env", "suite", "status", "defines", "sim_cycles", "roi_cycles_max", "num_errors",
+           "reference", "packets", "load_flits_per_cycle", "elapsed_s", "others_running"])
 
 
 # ----------------------------------------------------------------------------- batch
@@ -948,7 +1017,7 @@ def cmd_batch(a):
     # catch typos before anything starts: every program must exist
     for r in runs:
         find_program(r["args"][0])
-    root = runs_root(a)
+    root = top_root(a)
     name = a.name or re.sub(r"\.\w+$", "", os.path.basename(a.list))
     bdir = os.path.join(root, "batches", "%s_%s" % (datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S"), name))
     os.makedirs(bdir)
@@ -990,7 +1059,7 @@ def cmd_batch_worker(a):
         while queue and len(active) < cfg["jobs"]:
             k, r = queue.pop(0)
             out = open(os.path.join(bdir, "run%02d.out" % k), "w")
-            cmd = [sys.executable, os.path.abspath(__file__), "--runs-dir", runs_root(a),
+            cmd = [sys.executable, os.path.abspath(__file__), "--runs-dir", top_root(a),
                    "start"] + r["args"] + ["--fg"]
             p = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env)
             active.append((k, r, p, out))
@@ -1035,6 +1104,100 @@ def batches_in_progress(root):
     return out
 
 
+# ----------------------------------------------------------------------------- reorganize
+
+# Benchmark files renamed on 2026-11-22 (AIBench's own names); old run names follow.
+OLD_PROGRAMS = {
+    "aibench_conv2d.c": "aibench_convolution.c", "aibench_matmul.c": "aibench_fully_connected.c",
+    "aibench_max_pool.c": "aibench_max_pooling.c", "aibench_avg_pool.c": "aibench_avg_pooling.c",
+    "aibench_multiply.c": "aibench_element_multiply.c", "aibench_add.c": "aibench_element_add.c",
+}
+OLD_NAMES = {"conv2d": "convolution", "matmul": "fully_connected", "max_pool": "max_pooling",
+             "avg_pool": "avg_pooling", "multiply": "element_multiply", "add": "element_add"}
+
+
+def cmd_reorganize(a):
+    """Move run folders from the old flat layout ($NOC_RUNS/<run>/) into
+    <env>/<suite>/, full runs in the main folder and tests in scratch/."""
+    top = top_root(a)
+    sources = [(top, False)]
+    for extra in (a.also or ([os.path.expanduser("~/noc_runs_scratch")]
+                             if os.path.isdir(os.path.expanduser("~/noc_runs_scratch")) else [])):
+        sources.append((os.path.abspath(extra), True))
+    plan = []
+    for src, all_scratch in sources:
+        for jp in sorted(glob.glob(os.path.join(src, "*", "run.json"))):
+            d = os.path.dirname(jp)
+            if os.path.basename(d) in TOP_DIRS + ("baremetal", "linux"):
+                continue
+            i = load_run(d)
+            if i.get("status") == "running" or os.path.exists(os.path.join(d, "job.pid")):
+                print("skipping %s: still running (reorganize after it finishes)" % os.path.basename(d))
+                continue
+            prog = OLD_PROGRAMS.get(i.get("program") or "", i.get("program") or "")
+            try:
+                suite = program_suite(find_program(prog)) if prog else "other"
+            except SystemExit:
+                suite = "other"
+            name = OLD_NAMES.get(i["name"], i["name"])
+            reasons = []
+            if all_scratch:
+                reasons.append("was in %s" % src)
+            if i.get("defines"):
+                reasons.append("non-default size (%s)" % " ".join(i["defines"]))
+            if i.get("checkpoint") or i.get("restored_from"):
+                reasons.append("checkpoint test")
+            if i.get("status") != "PASS":
+                reasons.append("status %s" % i.get("status"))
+            dest_root = os.path.join(top, "scratch") if reasons else top
+            plan.append((d, i, prog, suite, name, dest_root, reasons))
+    if not plan:
+        print("nothing to move: every run folder is already in <env>/<suite>/")
+        return
+    print("%-40s -> %s" % ("run folder", "new place"))
+    targets = []
+    for d, i, prog, suite, name, dest_root, reasons in plan:
+        m = re.fullmatch(r"(\d{4}-\d\d-\d\d)_.*_(\d+x\d+)_r(\d+)", os.path.basename(d))
+        date, mesh, rnd = (m.group(1), m.group(2), int(m.group(3))) if m else (i["run"][:10], i.get("mesh", "2x1"), 1)
+        sdir = os.path.join(dest_root, "baremetal", suite)
+        new = os.path.join(sdir, "%s_%s_%s_r%d" % (date, name, mesh, rnd))
+        while os.path.exists(new) or new in targets:
+            rnd += 1
+            new = os.path.join(sdir, "%s_%s_%s_r%d" % (date, name, mesh, rnd))
+        targets.append(new)
+        print("%-40s -> %s%s" % (os.path.basename(d), os.path.relpath(new, top),
+                                 ("   [scratch: %s]" % "; ".join(reasons)) if reasons else ""))
+    if not a.yes:
+        print("\nNothing moved yet. Run again with --yes to move them. (Nothing is deleted;"
+              " a checkpoint inside a moved folder may no longer restore.)")
+        return
+    for (d, i, prog, suite, name, dest_root, reasons), new in zip(plan, targets):
+        os.makedirs(os.path.dirname(new), exist_ok=True)
+        shutil.move(d, new)
+        old_run, old_name = i["run"], i["name"]
+        i.update({"run": os.path.basename(new), "dir": new, "env": "baremetal", "suite": suite,
+                  "runs_root": dest_root, "moved_from": d})
+        if name != old_name:
+            i["renamed_from"] = "%s (program %s)" % (old_run, i.get("program"))
+            if i.get("app") == old_name[:1].upper() + old_name[1:]:
+                i["app"] = name[:1].upper() + name[1:]
+            i["name"] = name
+        if prog and prog != i.get("program"):
+            i["rerun"] = (i.get("rerun") or "").replace(i["program"], prog).replace("--name %s" % old_name, "--name %s" % name)
+            i["program"] = prog
+        for p in glob.glob(os.path.join(new, "analysis", "*", "summary.json")):
+            pass  # analysis files keep the old paths in their text; they're only labels
+        save_run(new, i)
+    for r in sorted(set(t[5] for t in plan)):
+        a2 = argparse.Namespace(runs_dir=None, scratch=False)
+        a2.runs_dir = r
+        cmd_reindex(a2)
+    print("done. Old index rows were rebuilt from the moved folders.")
+    for src, all_scratch in sources[1:]:
+        if os.path.isdir(src) and not glob.glob(os.path.join(src, "*", "run.json")):
+            print("%s has no runs left; you can delete it (rm -r %s)" % (src, src))
+
+
 # ----------------------------------------------------------------------------- main
 
 def main(argv=None):
@@ -1042,8 +1205,11 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--runs-dir", help="runs folder (default $NOC_RUNS or ~/noc_runs)")
     sub = ap.add_subparsers(dest="cmd")
+    scr = argparse.ArgumentParser(add_help=False)
+    scr.add_argument("--scratch", action="store_true",
+                     help="use $NOC_RUNS/scratch (its own index) instead of $NOC_RUNS: for smoke tests and experiments")
 
-    s = sub.add_parser("start", help="start a run in a new folder")
+    s = sub.add_parser("start", parents=[scr], help="start a run in a new folder")
     s.add_argument("program", help="test program, e.g. parsec_blackscholes.c (found under piton/verif/diag)")
     s.add_argument("-m", "--mesh", default="2x1", help="XxY tiles (default 2x1)")
     s.add_argument("-b", "--build-id", help="model to run (default ariane_<mesh>)")
@@ -1096,17 +1262,17 @@ def main(argv=None):
     s.add_argument("--keep-logs", action="store_true")
     s.add_argument("--no-analysis", action="store_true")
 
-    s = sub.add_parser("analyze", help="analyze runs at another window size -> RUN/analysis/w<N>")
+    s = sub.add_parser("analyze", parents=[scr], help="analyze runs at another window size -> RUN/analysis/w<N>")
     s.add_argument("runs", nargs="+", help="run folders (or unique parts of their names)")
     s.add_argument("-w", "--window", type=int, default=10000)
     s.add_argument("--tag", help="output folder name under analysis/ (default w<N>)")
 
-    s = sub.add_parser("compare", help="analyze runs together -> runs/compare/...")
+    s = sub.add_parser("compare", parents=[scr], help="analyze runs together -> runs/compare/...")
     s.add_argument("runs", nargs="+")
     s.add_argument("-w", "--window", type=int, default=10000)
     s.add_argument("-o", "--out")
 
-    s = sub.add_parser("import", help="bring an existing trace (+ logs) into the runs layout")
+    s = sub.add_parser("import", parents=[scr], help="bring an existing trace (+ logs) into the runs layout")
     s.add_argument("--name", required=True)
     s.add_argument("--trace", required=True)
     s.add_argument("--mesh", default="2x1")
@@ -1116,6 +1282,8 @@ def main(argv=None):
     s.add_argument("--build-id")
     s.add_argument("-D", "--define", action="append", default=[])
     s.add_argument("--date", help="YYYY-MM-DD (default: the trace file's date)")
+    s.add_argument("--env", default="baremetal", help="baremetal (default) or linux")
+    s.add_argument("--suite", help="results subfolder (default: from --program, else 'other')")
     s.add_argument("--app")
     s.add_argument("--note")
     s.add_argument("-w", "--window", type=int, default=10000)
@@ -1125,14 +1293,20 @@ def main(argv=None):
     s.add_argument("-j", "--jobs", type=int, default=1, help="runs at the same time (default 1: one after another)")
     s.add_argument("--name", help="batch name (default: the list file's name)")
     s.add_argument("--fg", action="store_true", help="run the queue in this terminal")
+    s = sub.add_parser("reorganize", help="move runs from the old flat layout into <env>/<suite>/ (asks first)")
+    s.add_argument("--yes", action="store_true", help="really move them (without it, only show the plan)")
+    s.add_argument("--also", action="append", metavar="DIR",
+                   help="another runs folder to merge into scratch/ (default: ~/noc_runs_scratch if it exists)")
     s = sub.add_parser("_batch-worker")
     s.add_argument("bdir")
-    s = sub.add_parser("status", help="runs in progress and the latest finished ones")
+    s = sub.add_parser("status", parents=[scr], help="runs in progress and the latest finished ones")
     s.add_argument("-n", type=int, default=5)
-    s = sub.add_parser("reindex", help="rebuild runs.csv from the run folders")
-    s = sub.add_parser("list", help="the run index")
+    s = sub.add_parser("reindex", parents=[scr], help="rebuild runs.csv from the run folders")
+    s = sub.add_parser("list", parents=[scr], help="the run index")
     s.add_argument("-n", type=int, default=0)
     s.add_argument("--grep", help="only rows containing this text")
+    s.add_argument("--suite", help="only this suite, e.g. aibench_micro or parsec")
+    s.add_argument("--env", help="only this environment: baremetal or linux")
 
     # analyze/compare: anything after "--" goes to noctrace unchanged,
     # e.g.  nocrun analyze RUN -w 5000 -- --noc 2 --signature-unit flits
@@ -1148,7 +1322,8 @@ def main(argv=None):
         return
     {"start": cmd_start, "finish": cmd_finish, "analyze": cmd_analyze, "compare": cmd_compare,
      "import": cmd_import, "status": cmd_status, "list": cmd_list, "restore": cmd_restore,
-     "reindex": cmd_reindex, "batch": cmd_batch, "_batch-worker": cmd_batch_worker}[a.cmd](a)
+     "reindex": cmd_reindex, "batch": cmd_batch, "_batch-worker": cmd_batch_worker,
+     "reorganize": cmd_reorganize}[a.cmd](a)
 
 
 if __name__ == "__main__":

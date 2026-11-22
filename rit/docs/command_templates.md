@@ -120,7 +120,7 @@ rm -rf $PITON_ROOT/build/manycore/ariane_2x2
 
 Every run goes through `nocrun`: each run gets its own folder under `~/noc_runs/`, survives logging out, records exactly how it was made, and is analyzed when it ends. Details: [`runs.md`](runs.md).
 
-Test programs are in `$PITON_ROOT/piton/verif/diag/c/riscv/ariane/` (give just the file name; `nocrun` finds it). The benchmarks are in its `rit/` folder: `parsec_blackscholes.c` and `aibench_<kernel>.c` for conv2d, matmul, relu, sigmoid, tanh, max_pool, avg_pool, batch_norm, dropout, multiply, softmax and add ([`../benchmarks/README.md`](../benchmarks/README.md)). Small tests: `hello_world.c`, `hello_world_many.c`, `add_shared_var.c`.
+Test programs are in `$PITON_ROOT/piton/verif/diag/c/riscv/ariane/` (give just the file name; `nocrun` finds it). The benchmarks are in its `rit/` folder: `parsec/parsec_blackscholes.c` and `aibench/micro/aibench_<name>.c` for convolution, fully_connected, relu, sigmoid, tanh, max_pooling, avg_pooling, batch_norm, dropout, element_multiply, softmax and element_add ([`../benchmarks/README.md`](../benchmarks/README.md)). Small tests: `hello_world.c`, `hello_world_many.c`, `add_shared_var.c`.
 
 ### Start a run
 
@@ -134,7 +134,7 @@ nocrun start <program> [-m <XxY>] [-D <NAME>=<value> ...] [--name <name>] [--not
 |---|---|
 | `<program>` | test program file name, e.g. `parsec_blackscholes.c` |
 | `[-m <XxY>]` | mesh, default `2x1`. Uses the model `ariane_<XxY>` (`-b <build_id>` for another) |
-| `[-D <NAME>=<value>]` | compile-time setting, repeatable, e.g. `-D NUM_OPTIONS=16` (blackscholes input size) or `-D IMG_H=32 -D IMG_W=32` (conv2d image size) |
+| `[-D <NAME>=<value>]` | compile-time setting, repeatable, e.g. `-D NUM_OPTIONS=16` (blackscholes input size) or `-D IMG_H=32 -D IMG_W=32` (AIBench image size) |
 | `[--name <name>]` | run name in the folder name; default the program name without `parsec_`/`aibench_` |
 | `[--note "<text>"]` | saved in `run_info.txt` |
 | `[--trace-start/--trace-stop <cycle>]` | trace only these cycles. Programs with ROI markers (the benchmarks) are already traced only in their ROI |
@@ -146,12 +146,12 @@ nocrun start <program> [-m <XxY>] [-D <NAME>=<value> ...] [--name <name>] [--not
 # examples
 nocrun start parsec_blackscholes.c -D NUM_OPTIONS=16 --name bs16 --fg   # smoke test (~176,671 cycles), wait for it
 nocrun start parsec_blackscholes.c                                      # full run: simsmall, ~20 min
-nocrun start aibench_conv2d.c                                           # full run: one 227x227 image, ~4 h
-nocrun start aibench_conv2d.c -D IMG_H=32 -D IMG_W=32 --name conv32     # conv2d smoke test
+nocrun start aibench_convolution.c                                      # full run: one 227x227 image, ~4 h
+nocrun start aibench_convolution.c -D IMG_H=32 -D IMG_W=32 --scratch --fg   # smoke test, kept in scratch/
 nocrun start hello_world_many.c --trace-start 50000 --trace-stop 150000 # cycle window on any program
 ```
 
-For throwaway runs, put them in another folder so they stay out of your real index: `NOC_RUNS=~/noc_runs_scratch nocrun start ...`
+Results go to `~/noc_runs/baremetal/<suite>/` (the suite comes from the program's folder: `aibench_micro`, `parsec`). For smoke tests and experiments add `--scratch`: they go to `~/noc_runs/scratch/` with their own index (`nocrun list --scratch`).
 
 ### Start a batch of runs
 
@@ -168,7 +168,7 @@ nocrun batch <list_file> [-j <at_a_time>] [--name <name>]
 
 ```bash
 # example: every AIBench port, 2 at a time
-nocrun batch rit/benchmarks/aibench/all.txt -j 2
+nocrun batch rit/benchmarks/aibench/micro/all.txt -j 2
 # stop a whole batch, including its running simulations
 kill -- -$(cat ~/noc_runs/batches/<batch_folder>/batch.pid)
 ```
@@ -179,9 +179,9 @@ Results don't depend on how many run at once; wall time does a little ([runs.md]
 
 ```bash
 nocrun status                          # what's running, the last 5 finished
-nocrun list                            # every run (runs.csv);  nocrun list --grep conv2d
-cat ~/noc_runs/<run>/run_info.txt      # one run: PASS/FAIL, cycles, ROI per core, trace, checkpoint
-cat ~/noc_runs/<run>/uart.log          # the program's printf output: Num Errors, ROI cycles
+nocrun list                            # every run (runs.csv);  nocrun list --suite aibench_micro
+cat <run folder>/run_info.txt          # one run: PASS/FAIL, cycles, ROI per core, checksum, trace
+cat <run folder>/uart.log              # the program's printf output: Num Errors, ROI cycles
 ```
 
 **Success:** `status` is `PASS`, `uart.log` ends with `Num Errors: 0`, and `run_info.txt` lists a trace and `analysis: w10000`. AIBench ports at their default size also show `checksum: 0x... (matches original)`.
@@ -220,7 +220,7 @@ nocrun analyze <run> [<run> ...] -w <window>
 
 ```bash
 # example
-nocrun analyze conv2d_2x1_r1 -w 80000
+nocrun analyze convolution_2x1_r1 -w 80000
 ```
 
 ### Compare runs
@@ -232,7 +232,7 @@ nocrun compare <run> <run> [...] -w <window>
 
 ```bash
 # example
-nocrun compare blackscholes conv2d -w 20000
+nocrun compare blackscholes convolution -w 20000
 ```
 
 Writes one result folder per run plus `runs_summary.csv` (one row per run) to `~/noc_runs/compare/<time>_w<window>/`.
@@ -268,16 +268,16 @@ nocrun analyze blackscholes -w 1000 --tag zoom -- --start 1000000 --end 1200000
 
 ```bash
 # template
-cat ~/noc_runs/<run_folder>/analysis/<tag>/summary.txt
-ls ~/noc_runs/<run_folder>/analysis/<tag>/
+cat ~/noc_runs/<env>/<suite>/<run_folder>/analysis/<tag>/summary.txt
+ls ~/noc_runs/<env>/<suite>/<run_folder>/analysis/<tag>/
 ```
 
 ```bash
 # example
-cat ~/noc_runs/2026-11-17_conv2d_2x1_r1/analysis/w10000/summary.txt
+cat ~/noc_runs/baremetal/aibench_micro/2026-11-17_convolution_2x1_r1/analysis/w10000/summary.txt
 ```
 
-**Plots on your PC:** in MobaXterm's **SFTP** sidebar, enter `/home/<username>/noc_runs/<run_folder>/analysis/w10000/` in the path box and double-click a PNG. (`echo $HOME` prints your home folder.)
+**Plots on your PC:** in MobaXterm's **SFTP** sidebar, enter `/home/<username>/noc_runs/<env>/<suite>/<run_folder>/analysis/w10000/` in the path box and double-click a PNG. (`echo $HOME` prints your home folder.)
 
 **Top rows of any CSV:**
 ```bash
@@ -286,7 +286,7 @@ python3 -c "import pandas as pd; print(pd.read_csv('<csv_file>').head(<rows>).to
 ```
 ```bash
 # example
-cd ~/noc_runs/2026-11-17_conv2d_2x1_r1/analysis/w10000
+cd ~/noc_runs/baremetal/aibench_micro/2026-11-17_convolution_2x1_r1/analysis/w10000
 python3 -c "import pandas as pd; print(pd.read_csv('per_path.csv').head(15).to_string())"
 ```
 

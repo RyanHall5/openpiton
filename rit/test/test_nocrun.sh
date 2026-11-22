@@ -44,11 +44,12 @@ printf "4001000: Simulation -> PASS (HIT GOOD TRAP)\n           V C S   S i m u 
 FAKE
 chmod +x "$T/bin/sims"; export PATH=$T/bin:$PATH
 N="python3 $RIT/bin/nocrun"
+P=$NOC_RUNS/baremetal/parsec; A=$NOC_RUNS/baremetal/aibench_micro
 ok=1; check() { if eval "$2"; then echo "PASS nocrun: $1"; else echo "FAIL nocrun: $1"; ok=0; fi; }
 
 $N start parsec_blackscholes.c -D NUM_OPTIONS=16 --fg > "$T/out1.txt"
-R=$(ls -d "$NOC_RUNS"/*_blackscholes_2x1_r1)
-check "run folder named <date>_blackscholes_2x1_r1" "[ -d '$R' ]"
+R=$(ls -d "$P"/*_blackscholes_2x1_r1)
+check "run folder baremetal/parsec/<date>_blackscholes_2x1_r1 (suite from the program's folder)" "[ -d '$R' ] && grep -q 'env / suite: *baremetal / parsec' '$R/run_info.txt'"
 check "status PASS, cycles (4001000 ps / 2500 ps clock in the test trace), ROI and errors parsed" "grep -q 'status: *PASS' '$R/run_info.txt' && grep -q 'sim cycles: *1600' '$R/run_info.txt' && grep -q 'hart 1 ROI: *2090539' '$R/run_info.txt' && grep -q 'num errors: *0' '$R/run_info.txt'"
 check "define passed to sims" "grep -q -- '-gcc_args=-DNUM_OPTIONS=16' '$R/job.sh'"
 check "trace gzipped, csv gone" "[ -f '$R/trace.csv.gz' ] && [ ! -f '$R/trace.csv' ]"
@@ -64,11 +65,11 @@ check "second window in its own folder, first untouched" "[ -f '$R/analysis/w500
 check "window shift: ROI-relative cycles in the analysis" "grep -q 'cycle 0 = cycle' '$R/analysis/w500/summary.txt'"
 
 $N start parsec_blackscholes.c --fg > /dev/null
-R2=$(ls -d "$NOC_RUNS"/*_blackscholes_2x1_r2)
+R2=$(ls -d "$P"/*_blackscholes_2x1_r2)
 check "second run gets r2" "[ -d '$R2' ] && [ -d '$R' ]"
 
-FAKE_KILL=1 $N start aibench_conv2d.c --fg > /dev/null
-R3=$(ls -d "$NOC_RUNS"/*_conv2d_2x1_r1)
+FAKE_KILL=1 $N start aibench_convolution.c --fg > /dev/null
+R3=$(ls -d "$A"/*_convolution_2x1_r1)
 check "killed run recorded as KILLED(SIGHUP), trace still analyzed" "grep -q 'status: *KILLED(SIGHUP)' '$R3/run_info.txt' && [ -f '$R3/analysis/w10000/summary.txt' ]"
 
 $N compare blackscholes_2x1_r1 blackscholes_2x1_r2 -w 1000 -o "$T/cmp" > /dev/null
@@ -77,7 +78,7 @@ check "compare writes runs_summary.csv with 2 runs" "[ \$(wc -l < '$T/cmp/runs_s
 cp sims.log 2>/dev/null || true
 printf "x\n4001000: Simulation -> PASS (HIT GOOD TRAP)\nTime: 4001000 ps\n" > "$T/old_sims.log"
 $N import --name bsold --trace "$SRC" --sims-log "$T/old_sims.log" --date 2026-11-15 --note "old run" > /dev/null
-RI=$(ls -d "$NOC_RUNS"/2026-11-15_bsold_2x1_r1)
+RI=$(ls -d "$NOC_RUNS"/baremetal/other/2026-11-15_bsold_2x1_r1)
 check "import: folder, PASS, original log untouched" "grep -q 'status: *PASS' '$RI/run_info.txt' && [ -f '$T/old_sims.log' ] && [ -f '$RI/analysis/w10000/summary.txt' ]"
 check "index has 4 runs" "[ \$(wc -l < '$NOC_RUNS/runs.csv') -eq 5 ]"
 check "index keeps every run's name" "! grep -q '^,' '$NOC_RUNS/runs.csv' && [ \$(cut -d, -f1 '$NOC_RUNS/runs.csv' | grep -c _r) -eq 4 ]"
@@ -88,27 +89,59 @@ check "list and status run" "true"
 
 # checkpoint: save during a run, then restore it into a new run folder
 $N start parsec_blackscholes.c --name ckpt --save-at 50000 --fg > /dev/null
-RC=$(ls -d "$NOC_RUNS"/*_ckpt_2x1_r1)
+RC=$(ls -d "$P"/*_ckpt_2x1_r1)
 check "--save-at passes the plusargs and the checkpoint is kept" "grep -q -- '+rit_save_at=50000' '$RC/job.sh' && [ -f '$RC/checkpoint.vcs' ] && grep -q 'checkpoint: *checkpoint.vcs at cycle 50000' '$RC/run_info.txt'"
 check "--save-at runs with address randomization off" "grep -q 'setarch .* -R sims' '$RC/job.sh' && grep -q 'MB with checkpoint.vcs.FILES' '$RC/run_info.txt'"
 $N restore ckpt_2x1_r1 --fg > /dev/null
-RR=$(ls -d "$NOC_RUNS"/*_ckpt_2x1_r2)
+RR=$(ls -d "$P"/*_ckpt_2x1_r2)
 check "restore runs with address randomization off" "grep -q 'setarch .* -R .*simv -r' '$RR/job.sh'"
 check "restore: new folder, simv -r, PASS, trace analyzed, origin recorded" "grep -q 'simv -r .*checkpoint.vcs +noc_trace_file=trace.csv' '$RR/job.sh' && grep -q 'status: *PASS' '$RR/run_info.txt' && grep -q 'restored from: *[0-9-]*_ckpt_2x1_r1' '$RR/run_info.txt' && [ -f '$RR/analysis/w10000/summary.txt' ] && [ -f '$RR/program/diag.c' ]"
 
 # detached start: returns at once, job finishes on its own
 $N start parsec_blackscholes.c > /dev/null
-for i in $(seq 1 60); do [ -z "$(ls "$NOC_RUNS"/*_r3/job.pid 2>/dev/null)" ] && [ -f "$(ls -d "$NOC_RUNS"/*_blackscholes_2x1_r3)/run.json" ] && grep -q '"status": "PASS"' "$NOC_RUNS"/*_blackscholes_2x1_r3/run.json 2>/dev/null && break; sleep 1; done
-check "detached run finishes by itself" "grep -q '\"status\": \"PASS\"' $NOC_RUNS/*_blackscholes_2x1_r3/run.json"
+for i in $(seq 1 60); do [ -z "$(ls "$P"/*_r3/job.pid 2>/dev/null)" ] && [ -f "$(ls -d "$P"/*_blackscholes_2x1_r3)/run.json" ] && grep -q '"status": "PASS"' "$P"/*_blackscholes_2x1_r3/run.json 2>/dev/null && break; sleep 1; done
+check "detached run finishes by itself" "grep -q '\"status\": \"PASS\"' $P/*_blackscholes_2x1_r3/run.json"
 # batch: three runs, two at a time, in the background
-printf "# test batch\naibench_relu.c\nparsec_blackscholes.c --name bb -D NUM_OPTIONS=16   # comment\n\naibench_conv2d.c --name cc\n" > "$T/list.txt"
+printf "# test batch\naibench_relu.c\nparsec_blackscholes.c --name bb -D NUM_OPTIONS=16   # comment\n\naibench_convolution.c --name cc\n" > "$T/list.txt"
 FAKE_SLEEP=3 $N batch "$T/list.txt" -j 2 > "$T/batch_out.txt"
 B=$(ls -d "$NOC_RUNS"/batches/*_list)
 for i in $(seq 1 90); do grep -q "batch done" "$B/batch.log" 2>/dev/null && break; sleep 1; done
 check "batch: all 3 runs finish, worker exits" "grep -q 'batch done' '$B/batch.log' && [ \$(grep -c ' finish .*PASS' '$B/batch.log') -eq 3 ] && [ ! -e '$B/batch.pid' ]"
 check "batch: never more than 2 at once (3rd starts after a finish)" "awk '/ start /{n++; if(n-f>2) bad=1} / finish /{f++} END{exit bad}' '$B/batch.log'"
-RB=$(ls -d "$NOC_RUNS"/*_relu_2x1_r1)
+RB=$(ls -d "$A"/*_relu_2x1_r1)
 check "batch: run records its batch, the machine load, and the reference checksum" "grep -q 'batch: *[0-9-]*_[0-9]*_list' '$RB/run_info.txt' && grep -q 'other sims running:' '$RB/run_info.txt' && grep -q 'checksum: *0x9bb2151206d00020 (matches original)' '$RB/run_info.txt' && grep -q 'matches original' '$NOC_RUNS/runs.csv'"
 check "batch: a typo in the list is caught before anything starts" "printf 'no_such_program.c\n' > '$T/bad.txt'; ! $N batch '$T/bad.txt' > /dev/null 2>&1"
+
+# scratch: own folder and index, kept out of the main list
+$N start aibench_relu.c --scratch -D IMG_H=16 --fg > /dev/null
+check "--scratch: run under scratch/baremetal/aibench_micro with its own index" "ls -d '$NOC_RUNS'/scratch/baremetal/aibench_micro/*_relu_2x1_r1 > /dev/null && grep -q 'relu_2x1_r1' '$NOC_RUNS/scratch/runs.csv' && [ \$($N list | grep -c relu_2x1) -eq 1 ] && $N list --scratch | grep -q relu_2x1_r1"
+check "list --suite filters" "$N list --suite parsec | grep -q blackscholes && ! $N list --suite parsec | grep -q convolution"
+check "analyze finds a run anywhere in the layout by part of its name" "$N analyze relu_2x1_r1 -w 700 > /dev/null && [ -d \$(ls -d '$A'/*_relu_2x1_r1)/analysis/w700 ]"
+
+# reorganize: folders in the old flat layout, with the old program names
+cp -r "$R" "$NOC_RUNS/2026-11-17_conv2d_2x1_r1"
+python3 - "$NOC_RUNS/2026-11-17_conv2d_2x1_r1/run.json" <<'PY'
+import json, sys
+p = sys.argv[1]; i = json.load(open(p))
+i.update(run="2026-11-17_conv2d_2x1_r1", name="conv2d", app="Conv2d", program="aibench_conv2d.c", defines=[],
+         rerun="nocrun start aibench_conv2d.c --mesh 2x1")
+for k in ("env", "suite", "runs_root", "checkpoint"): i.pop(k, None)
+json.dump(i, open(p, "w"))
+PY
+cp -r "$R" "$NOC_RUNS/2026-11-17_bs16_2x1_r1"
+python3 - "$NOC_RUNS/2026-11-17_bs16_2x1_r1/run.json" <<'PY'
+import json, sys
+p = sys.argv[1]; i = json.load(open(p))
+i.update(run="2026-11-17_bs16_2x1_r1", name="bs16", defines=["NUM_OPTIONS=16"])
+for k in ("env", "suite", "runs_root"): i.pop(k, None)
+json.dump(i, open(p, "w"))
+PY
+$N reorganize --also "$T/none" > "$T/reorg_plan.txt"
+check "reorganize: shows the plan and moves nothing without --yes" "grep -q 'convolution_2x1_r1' '$T/reorg_plan.txt' && [ -d '$NOC_RUNS/2026-11-17_conv2d_2x1_r1' ]"
+$N reorganize --yes --also "$T/none" > /dev/null
+RN=$NOC_RUNS/baremetal/aibench_micro/2026-11-17_convolution_2x1_r1
+check "reorganize: full run moved and renamed (conv2d -> convolution), rerun uses the new file" "[ -d '$RN' ] && [ ! -e '$NOC_RUNS/2026-11-17_conv2d_2x1_r1' ] && grep -q 'renamed from: *2026-11-17_conv2d_2x1_r1' '$RN/run_info.txt' && grep -q 'nocrun start aibench_convolution.c' '$RN/run_info.txt'"
+check "reorganize: a test run goes to scratch/" "[ -d '$NOC_RUNS/scratch/baremetal/parsec/2026-11-17_bs16_2x1_r1' ]"
+check "reorganize: both indexes rebuilt" "grep -q '2026-11-17_convolution_2x1_r1' '$NOC_RUNS/runs.csv' && grep -q '2026-11-17_bs16_2x1_r1' '$NOC_RUNS/scratch/runs.csv' && ! grep -q 'conv2d_2x1' '$NOC_RUNS/runs.csv'"
 
 [ $ok = 1 ] && echo "NOCRUN ALL PASS" || { echo "NOCRUN CHECKS FAILED"; exit 1; }

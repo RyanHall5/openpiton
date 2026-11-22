@@ -41,7 +41,7 @@
 //
 // Options: BATCH, IMG_H, IMG_W, NTHREADS, AIB_EPOCH.
 // After the ROI hart 0 checks every element and prints a checksum to compare
-// with the original built on x86 (rit/benchmarks/aibench/).
+// with the original built on x86 (rit/benchmarks/aibench/micro/).
 
 #include <stdint.h>
 #include <stdio.h>
@@ -50,7 +50,7 @@
 #include "rit/aibench.h"
 
 // Checksum of the ORIGINAL AIBench kernel's output for the default size and
-// this input (rit/benchmarks/aibench/check_ports.sh). Applies only when
+// this input (rit/benchmarks/aibench/micro/check_ports.sh). Applies only when
 // BATCH, IMG_H and IMG_W are left at their defaults and only one thread runs
 // (with more, which elements are kept depends on timing).
 #define AIB_REF_CHECKSUM 0x6e431751526de325ull
@@ -106,7 +106,7 @@ int main(int argc, char **argv)
 
     if (hart == 0) {
         setup_ok = nThreads >= 1 && nThreads <= nharts;
-        printf("AIBench dropout (bare-metal port): NHWC %d x %d x %d x %d = %ld elements, keep_prob 0.4, %d threads of %d harts\n",
+        printf("AIBench Micro Dropout (DC-AI-M10), bare-metal port: NHWC %d x %d x %d x %d = %ld elements, keep_prob 0.4, %d threads of %d harts\n",
                BATCH, IMG_H, IMG_W, CHANNELS, NELEM, nThreads, nharts);
         if (setup_ok)
             aib_fill_pixels(data, NELEM);

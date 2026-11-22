@@ -1,13 +1,13 @@
 // rit/aib_rand.h: glibc's srand()/rand() for the bare-metal AIBench ports.
 // Included by rit/aibench.h, which defines aib_lock_t, aib_lock() and
-// aib_unlock() first. rit/benchmarks/aibench/test_rand.c includes it on x86
+// aib_unlock() first. rit/benchmarks/aibench/micro/test_rand.c includes it on x86
 // (with a no-op lock) and checks the results against the real glibc.
 //
 // glibc's srand()/rand() (stdlib/random.c, random_r.c): the default TYPE_3
 // additive generator, state of 31 words, one process-wide state protected by
 // one lock. srand() reseeds it (31 multiply/divide steps, then 310 discarded
 // outputs); rand() advances it one step. Results are identical to glibc's for
-// the same seed (checked on x86, rit/benchmarks/aibench/). The table, the
+// the same seed (checked on x86, rit/benchmarks/aibench/micro/). The table, the
 // state pointers and the lock live in separate places, as in glibc (randtbl
 // and unsafe_state in .data, the lock in .bss).
 #ifndef RIT_AIB_RAND_H

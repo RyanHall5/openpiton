@@ -40,7 +40,7 @@
 #pragma GCC optimize ("fp-contract=off")
 
 // Checksum of the ORIGINAL AIBench kernel's output for the default size and
-// this input (rit/benchmarks/aibench/check_ports.sh). Applies only when
+// this input (rit/benchmarks/aibench/micro/check_ports.sh). Applies only when
 // BATCH, IMG_H and IMG_W are left at their defaults.
 #define AIB_REF_CHECKSUM 0xda742bde69e2d87bull
 #if !defined(BATCH) && !defined(IMG_H) && !defined(IMG_W)
@@ -102,7 +102,7 @@ int main(int argc, char **argv)
 
     if (hart == 0) {
         setup_ok = nThreads >= 1 && nThreads <= nharts;
-        printf("AIBench matmul (bare-metal port): [%ld x %ld] x [%ld x %ld] from NHWC %d x %d x %d x %d, %d threads of %d harts\n",
+        printf("AIBench Micro Fully Connected (DC-AI-M2, matrix multiply), bare-metal port: [%ld x %ld] x [%ld x %ld] from NHWC %d x %d x %d x %d, %d threads of %d harts\n",
                R, K, K, R, BATCH, IMG_H, IMG_W, CHANNELS, nThreads, nharts);
         if (setup_ok) {
             aib_fill_pixels(data1, R * K);

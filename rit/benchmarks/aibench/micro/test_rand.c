@@ -1,5 +1,5 @@
 // Check rit/aib_rand.h against glibc's srand()/rand() on x86:
-//   gcc -O2 rit/benchmarks/aibench/test_rand.c -I piton/verif/diag/assembly/include/riscv/ariane
+//   gcc -O2 rit/benchmarks/aibench/micro/test_rand.c -I piton/verif/diag/assembly/include/riscv/ariane
 // For many seeds (including the dropout port's default time value), the first
 // 1000 numbers after srand(seed) must be the same.
 #include <stdio.h>

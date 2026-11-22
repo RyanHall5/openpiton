@@ -24,10 +24,9 @@
 //     batch thread per batch. Here BATCH images form one batch (default 1, so
 //     the 2x1 model gets one job per hart).
 //
-// Run on the 2x1 model (both harts):
-//   sims -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -vcs_run aibench_conv2d.c \
-//        -ariane -finish_mask 0x11 -rtl_timeout 10000000 \
-//        -sim_run_args=+noc_trace -sim_run_args=+noc_trace_file=conv2d_2x1_r1.csv
+// Run on the 2x1 model (both harts):  nocrun start aibench_convolution.c
+// (the plain sims command is in the run's job.sh). Until 2026-11-22 this file
+// was aibench_conv2d.c.
 //
 // Compile-time options (-gcc_args=-DNAME=VALUE, one per -gcc_args):
 //   BATCH        images per batch (default 1)
@@ -183,7 +182,7 @@ int main(int argc, char **argv)
 #endif
         setup_ok = (nThreads >= 1 && nThreads <= nharts);
         if (setup_ok) {
-            printf("AIBench conv2d (bare-metal port): NCHW, SAME, strides 1,1,2,2\n");
+            printf("AIBench Micro Convolution (DC-AI-M1), bare-metal port: NCHW, SAME, strides 1,1,2,2\n");
             printf("batch %d x %d x %d x %d -> %d x %d x %d x %d, %d jobs, %d threads of %d harts\n",
                    BATCH, IN_C, IMG_H, IMG_W, BATCH, FILTER_OUT, OUT_H, OUT_W,
                    jobsNumber, nThreads, nharts);

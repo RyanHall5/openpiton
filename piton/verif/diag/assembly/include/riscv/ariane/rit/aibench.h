@@ -1,5 +1,5 @@
 // rit/aibench.h: shared scaffolding for the bare-metal AIBench Micro ports
-// (piton/verif/diag/c/riscv/ariane/rit/aibench_*.c). Include after rit/bench.h,
+// (piton/verif/diag/c/riscv/ariane/rit/aibench/micro/aibench_*.c). Include after rit/bench.h,
 // from one C file only.
 //
 // What each port gets from here, and which part of the Linux original it
@@ -21,7 +21,7 @@
 //                        same shared state behind one lock (dropout).
 //   aib_time()           time(NULL) (dropout). See the note there.
 //   aib_checksum()       hash of an output array, to compare with the original
-//                        built on x86 (rit/benchmarks/aibench/check_ports.sh).
+//                        built on x86 (rit/benchmarks/aibench/micro/check_ports.sh).
 //   aib_finish()         prints the checksum, whether it matches the original's
 //                        (each port has the original's checksum for its default
 //                        size), and "Num Errors".
@@ -99,7 +99,7 @@ static void aib_print_stats(int nharts)
 // ------------------------------------------------------------------ checksum
 // 64-bit FNV-1a over the float bit patterns, in memory order. Every NaN counts
 // as 0x7fc00000 (its payload is not meaningful). Same function in the host
-// programs (rit/benchmarks/aibench/aib_host.h).
+// programs (rit/benchmarks/aibench/micro/aib_host.h).
 static uint64_t aib_checksum(const float *p, long n)
 {
     uint64_t h = 0xcbf29ce484222325ull;

@@ -10,24 +10,41 @@ export NOC_RUNS=$HOME/noc_runs
 
 ## Where results go
 
+Runs are sorted by **environment** (bare metal now, Linux later) and **suite**. The suite comes from the program's folder under `piton/verif/diag/c/riscv/ariane/rit/`, so nothing needs to be chosen by hand: `rit/aibench/micro/aibench_relu.c` → `aibench_micro`, `rit/parsec/parsec_blackscholes.c` → `parsec`. Programs outside `rit/` (`hello_world.c`, ...) go to `other`.
+
 ```
-~/noc_runs/                                 ($NOC_RUNS)
-├── runs.csv                                one row per run: status, cycles, packets, load, time...
-├── 2026-11-17_blackscholes_2x1_r1/
-│   ├── run_info.txt                        what was run and how it ended (run.json = same, for scripts)
-│   ├── job.sh                              the exact commands; rerun with: bash job.sh
-│   ├── uart.log                            the program's output (Num Errors, ROI cycles per hart)
-│   ├── trace.csv.gz                        the NoC trace, compressed (noctrace reads .gz directly)
-│   ├── sims_summary.log                    important lines of sims.log + its last 300 lines
-│   ├── program/                            diag.c, diag.exe, symbol.tbl, diag.dump, rv64_cc.log
-│   ├── analysis/w10000/                    noctrace results at window/bin 10000
-│   ├── analysis/w80000/                    ...and at any other size you ask for
-│   └── logs/                               only with --keep-logs
-├── 2026-11-17_conv2d_2x1_r1/
-└── compare/20261117-153000_w10000/         nocrun compare output
+~/noc_runs/                                     ($NOC_RUNS)
+├── runs.csv                                    index of every run: env, suite, status, cycles, checksum, ...
+├── baremetal/
+│   ├── aibench_micro/
+│   │   ├── 2026-11-22_relu_2x1_r1/
+│   │   │   ├── run_info.txt                    what was run and how it ended (run.json = same, for scripts)
+│   │   │   ├── job.sh                          the exact commands; rerun with: bash job.sh
+│   │   │   ├── uart.log                        the program's output (Num Errors, ROI cycles, checksum)
+│   │   │   ├── trace.csv.gz                    the NoC trace, compressed (noctrace reads .gz directly)
+│   │   │   ├── sims_summary.log                important lines of sims.log + its last 300 lines
+│   │   │   ├── program/                        diag.c, diag.exe, symbol.tbl, diag.dump, rv64_cc.log
+│   │   │   ├── analysis/w10000/                noctrace results at window/bin 10000
+│   │   │   ├── analysis/w80000/                ...and at any other size you ask for
+│   │   │   └── logs/                           only with --keep-logs
+│   │   └── 2026-11-22_sigmoid_2x1_r1/ ...
+│   └── parsec/
+│       └── 2026-11-18_blackscholes_2x1_r1/
+├── linux/                                      (later: the same <suite>/ folders)
+├── scratch/                                    smoke tests and experiments (--scratch)
+│   ├── runs.csv                                its own index
+│   └── baremetal/<suite>/...
+├── batches/<date>_<time>_<list>/               nocrun batch logs
+└── compare/<time>_w<N>/                        nocrun compare output
 ```
 
-The run folder is named `<date>_<name>_<mesh>_r<N>`. The name defaults to the program name without `parsec_` / `aibench_`, and N counts up for each run of the same name and mesh.
+The run folder is named `<date>_<name>_<mesh>_r<N>`. The name defaults to the program name without `parsec_` / `aibench_` (`aibench_max_pooling.c` → `max_pooling`), and N counts up for each run of the same name and mesh in that suite. Use `--name` for runs that differ from the default, e.g. `--name relu_64x64`.
+
+**Scratch:** add `--scratch` to `nocrun start` (and to `list`, `analyze`, `status`, ...) for smoke tests and experiments. They get the same layout under `~/noc_runs/scratch/` with their own `runs.csv`, so they never mix with real results; delete the whole folder whenever you like.
+
+**Finding runs:** every command takes a run by any unique part of its folder name (`nocrun analyze relu_2x1_r1`), wherever it is in the layout. `nocrun list --suite aibench_micro` / `--env baremetal` filters the index.
+
+**From the old layout:** runs made before 2026-11-22 sat directly in `~/noc_runs/`. `nocrun reorganize` shows where each would go (full runs to `baremetal/<suite>/`, runs with non-default sizes, checkpoint tests or a status other than PASS to `scratch/`, and `~/noc_runs_scratch` merged into `scratch/`); `nocrun reorganize --yes` moves them and rebuilds both indexes. Runs of renamed programs get the new names (`conv2d` → `convolution`), with the old name in `run_info.txt` as `renamed from`. Nothing is deleted. A checkpoint inside a moved folder may not restore afterwards.
 
 **What's not kept, and why:** `sims.log` (about 300 bytes per simulated cycle without `MINIMAL_MONITORING`) and Ariane's per-instruction traces `trace_hart_*.log` (about 70 bytes per instruction per core). Together that's over 1 GB per million cycles. `nocrun` points the instruction traces at `/dev/null` before the run, and after the run keeps only the important lines of `sims.log`. Add `--keep-logs` when you're debugging a run and need everything (gzipped, in `logs/`). `mem.image` is deleted too; it's rebuilt from `program/diag.exe` whenever needed.
 
@@ -38,16 +55,18 @@ The run folder is named `<date>_<name>_<mesh>_r<N>`. The name defaults to the pr
 ```bash
 nocrun start parsec_blackscholes.c                    # simsmall, 1 run
 nocrun start parsec_blackscholes.c -D NUM_OPTIONS=16  # smoke test
-nocrun start aibench_conv2d.c -D IMG_H=64 -D IMG_W=64 --note "size test"
+nocrun start aibench_convolution.c -D IMG_H=64 -D IMG_W=64 --name convolution_64x64 --note "size test"
+nocrun start aibench_relu.c -D IMG_H=16 -D IMG_W=16 --scratch --fg   # smoke test, kept in scratch/
 ```
 
-It prints the run folder and returns right away. The run carries on in the background, **safe to log out**: it's started in its own session (`setsid`), so closing your SSH session can't send it the hang-up signal that killed the second conv2d run. Add `--fg` to run in your terminal and wait.
+It prints the run folder and returns right away. The run carries on in the background, **safe to log out**: it's started in its own session (`setsid`), so closing your SSH session can't send it the hang-up signal that killed an early run. Add `--fg` to run in your terminal and wait.
 
 | Option | Default | Meaning |
 |---|---|---|
 | `-m`, `--mesh XxY` | `2x1` | tiles |
 | `-b`, `--build-id ID` | `ariane_<mesh>` | which model (`build/manycore/<ID>/simv`) |
 | `-D NAME[=VALUE]` | | compile-time define, repeatable (`-gcc_args=-D...` for sims) |
+| `--scratch` | off | put the run in `~/noc_runs/scratch/` (own index) |
 | `--name NAME` | from the program | run name in the folder name |
 | `--app NAME` | the name, capitalized | label in plot titles |
 | `--note TEXT` | | saved in `run_info.txt` |
@@ -66,8 +85,8 @@ It prints the run folder and returns right away. The run carries on in the backg
 
 ```bash
 nocrun status          # runs in progress (with how far their trace has got), then the last 5 finished
-nocrun list            # the whole index;  nocrun list --grep conv2d  for some of it
-tail -f ~/noc_runs/<run>/sims.log      # watch a run live
+nocrun list            # the whole index;  nocrun list --suite aibench_micro  for some of it
+tail -f <run folder>/sims.log          # watch a run live (nocrun status shows where it is)
 ```
 
 `status` shows `STOPPED` for a run whose job died without finishing (machine rebooted, killed by hand). Run `nocrun finish <run>` to tidy it up and record what's there.
@@ -86,7 +105,7 @@ A run name can be shortened to any unique part of it. Each window size gets its 
 ### Compare runs
 
 ```bash
-nocrun compare blackscholes_2x1_r1 conv2d_2x1_r1 -w 20000
+nocrun compare blackscholes_2x1_r1 convolution_2x1_r1 -w 20000
 ```
 
 Writes one result folder per run plus `runs_summary.csv` (one row per run) to `~/noc_runs/compare/<time>_w<N>/`.
@@ -147,7 +166,7 @@ Each run has its own folder, so runs can go in parallel, all using the same mode
 `nocrun batch` starts a list of runs as a queue, at most `-j N` at a time, in the background:
 
 ```bash
-nocrun batch rit/benchmarks/aibench/all.txt -j 2     # 11 runs, 2 at a time
+nocrun batch rit/benchmarks/aibench/micro/all.txt -j 2   # 12 runs, 2 at a time
 nocrun status                                        # batch progress, then each run
 cat ~/noc_runs/batches/<batch>/batch.log             # when each run started and finished
 ```
@@ -155,7 +174,7 @@ cat ~/noc_runs/batches/<batch>/batch.log             # when each run started and
 - The list is a text file with one run per line, written as the arguments to `nocrun start` (`#` starts a comment):
   ```
   aibench_relu.c
-  aibench_matmul.c -D IMG_H=96 -D IMG_W=96 --name matmul96
+  aibench_fully_connected.c -D IMG_H=96 -D IMG_W=96 --name fully_connected_96x96
   ```
 - Every program in the list is checked before anything starts, so a typo doesn't stop the batch halfway.
 - `-j 1` (the default) runs them one after another: isolated wall times, total time = the sum. `-j 2`–`-j 4` finishes much sooner with each run slightly slower (see above).

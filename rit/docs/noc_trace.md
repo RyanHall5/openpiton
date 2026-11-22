@@ -21,8 +21,8 @@ For copy-paste commands see **[command templates](command_templates.md)**. Every
 | 1. Install tools | `bash rit/setup/install_deps.sh` | once per account | toolchain in `~/tools`, `~/opt`, `~/.local` |
 | 2. Load environment | `source rit/setup/openpiton_env.sh` | every new terminal | `pbuild`, `nocrun`, `PITON_ROOT` |
 | 3. Build a model | `pbuild ... -build_id=<id>` | once per mesh size, and after pulling RTL/testbench changes | `build/manycore/<id>/simv`, with the monitor inside |
-| 4. Run | `nocrun start <program>.c` | once per experiment | `~/noc_runs/<run>/`: trace, output, analysis |
-| 5. Other window sizes | `nocrun analyze <run> -w <N>` | as needed | `~/noc_runs/<run>/analysis/w<N>/` |
+| 4. Run | `nocrun start <program>.c` | once per experiment | `~/noc_runs/<env>/<suite>/<run>/`: trace, output, analysis |
+| 5. Other window sizes | `nocrun analyze <run> -w <N>` | as needed | `<run folder>/analysis/w<N>/` |
 
 Steps 1–2 are covered in [`rhel9_vcs_setup.md`](rhel9_vcs_setup.md).
 
@@ -51,7 +51,7 @@ nocrun status                                                           # what's
 
 Tracing is on by default. When the run ends, `nocrun` compresses the trace into the run folder and analyzes it at 10,000-cycle windows. All `start` options are in [`runs.md`](runs.md).
 
-**Check it worked:** `cat ~/noc_runs/<run>/run_info.txt` shows PASS/FAIL, cycles, the ROI cycles per core and the trace size; `sims_summary.log` has the lines where the trace window opened and closed.
+**Check it worked:** `cat <run folder>/run_info.txt` shows PASS/FAIL, cycles, the ROI cycles per core and the trace size; `sims_summary.log` has the lines where the trace window opened and closed.
 
 ### Tracing only part of a run
 
@@ -64,15 +64,15 @@ Outside the window nothing is written. The analysis counts cycles from where the
 
 ## Step 5: Look at the results
 
-Everything for a run is in its folder, `~/noc_runs/<date>_<name>_<mesh>_r<N>/`. The analysis is in `analysis/w<N>/`, one folder per window size:
+Everything for a run is in its folder, `~/noc_runs/<env>/<suite>/<date>_<name>_<mesh>_r<N>/` (e.g. `~/noc_runs/baremetal/aibench_micro/2026-11-22_relu_2x1_r1/`; [runs.md](runs.md#where-results-go)). The analysis is in `analysis/w<N>/`, one folder per window size:
 
 ```bash
-cat ~/noc_runs/<run>/analysis/w10000/summary.txt
+cat ~/noc_runs/baremetal/<suite>/<run>/analysis/w10000/summary.txt
 nocrun analyze <run> -w 80000          # another window size -> analysis/w80000/
 nocrun compare <run> <run> -w 20000    # several runs together -> ~/noc_runs/compare/...
 ```
 
-A run name can be shortened to any unique part of it (`nocrun analyze conv2d -w 80000`).
+A run name can be shortened to any unique part of it (`nocrun analyze convolution -w 80000`).
 
 ### What you get
 
@@ -94,7 +94,7 @@ All columns are described in the [reference, §4](noctrace_reference.md#4-output
 ### Viewing results from the lab machine
 
 - **Text:** `cat`/`less` the `summary.txt` and CSVs.
-- **Plots and CSVs:** in MobaXterm's **SFTP** sidebar, enter `/home/<you>/noc_runs/<run>/analysis/w10000/` in the path box. Double-click a PNG to open it on your PC, or drag files to your desktop. CSVs open in Excel.
+- **Plots and CSVs:** in MobaXterm's **SFTP** sidebar, enter `/home/<you>/noc_runs/baremetal/<suite>/<run>/analysis/w10000/` in the path box. Double-click a PNG to open it on your PC, or drag files to your desktop. CSVs open in Excel.
 
 ---
 
@@ -126,7 +126,7 @@ nocrun analyze <run> -w 10000 --tag w10000_noc2 -- --noc 2
 
 **Compare runs:** use the **same window for every run** you compare. Windows are aligned to cycle 0, so the same cycle falls in the same window in every run.
 ```bash
-nocrun compare blackscholes conv2d -w 20000     # one folder per run + runs_summary.csv
+nocrun compare blackscholes convolution -w 20000     # one folder per run + runs_summary.csv
 ```
 
 **Find the slowest packets:**

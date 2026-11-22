@@ -24,7 +24,7 @@
 //
 // Options: BATCH, IMG_H, IMG_W, NTHREADS.
 // After the ROI hart 0 checks every element and prints a checksum to compare
-// with the original built on x86 (rit/benchmarks/aibench/).
+// with the original built on x86 (rit/benchmarks/aibench/micro/).
 
 #include <stdint.h>
 #include <stdio.h>
@@ -35,7 +35,7 @@
 #pragma GCC optimize ("fp-contract=off")
 
 // Checksum of the ORIGINAL AIBench kernel's output for the default size and
-// this input (rit/benchmarks/aibench/check_ports.sh). Applies only when
+// this input (rit/benchmarks/aibench/micro/check_ports.sh). Applies only when
 // BATCH, IMG_H and IMG_W are left at their defaults.
 #define AIB_REF_CHECKSUM 0xe9ca3de52588a46eull
 #if !defined(BATCH) && !defined(IMG_H) && !defined(IMG_W)
@@ -100,7 +100,7 @@ int main(int argc, char **argv)
 
     if (hart == 0) {
         setup_ok = nThreads >= 1 && nThreads <= nharts;
-        printf("AIBench batch_norm (bare-metal port): NHWC %d x %d x %d x %d, %d jobs (images), %d threads of %d harts\n",
+        printf("AIBench Micro BatchNorm (DC-AI-M9), bare-metal port: NHWC %d x %d x %d x %d, %d jobs (images), %d threads of %d harts\n",
                BATCH, IMG_H, IMG_W, CHANNELS, BATCH, nThreads, nharts);
         if (setup_ok) {
             aib_fill_pixels(&input[0][0][0][0], (long)BATCH * IMG_H * IMG_W * CHANNELS);

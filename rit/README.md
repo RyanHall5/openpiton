@@ -27,7 +27,7 @@ piton/tools/bin/rv64_img, piton/tools/src/sims/sims,2.0
   (pass a program's ROI marker addresses to the monitor: trace window)
 piton/verif/env/manycore/rit_ckpt.v.pyv        checkpoint at a chosen cycle (+rit_save_at=N)
 piton/verif/env/manycore/pc_cmp.v.pyv          (fix: Ariane tiles have one thread, so -rtl_timeout catches hangs)
-piton/verif/diag/c/riscv/ariane/rit/            benchmark programs (parsec_blackscholes.c, aibench_conv2d.c)
+piton/verif/diag/c/riscv/ariane/rit/            benchmark programs: parsec/, aibench/micro/
 piton/verif/diag/assembly/include/riscv/ariane/rit/   their headers (bench.h, math.h, bs_option_data.h)
 ```
 
@@ -39,7 +39,7 @@ piton/verif/diag/assembly/include/riscv/ariane/rit/   their headers (bench.h, ma
 | set up a lab account, build and run OpenPiton | [`docs/rhel9_vcs_setup.md`](docs/rhel9_vcs_setup.md) |
 | record NoC traffic and analyze it | [`docs/noc_trace.md`](docs/noc_trace.md) (user guide) |
 | look up a trace switch, analysis option, output file or column | [`docs/noctrace_reference.md`](docs/noctrace_reference.md) |
-| run PARSEC blackscholes / AIBench conv2d on the 2x1 model | [`benchmarks/README.md`](benchmarks/README.md) |
+| run PARSEC blackscholes / the AIBench Micro kernels on the 2x1 model | [`benchmarks/README.md`](benchmarks/README.md) |
 | start runs without overwriting results, keep them organized, checkpoints | [`docs/runs.md`](docs/runs.md) |
 | plan and findings for booting Linux in the simulation | [`docs/linux_sim.md`](docs/linux_sim.md) |
 
@@ -62,7 +62,7 @@ cd $PITON_ROOT/build
 pbuild -sys=manycore -x_tiles=2 -y_tiles=1 -build_id=ariane_2x1 -ariane -config_rtl=MINIMAL_MONITORING   # build once (monitor included)
 nocrun start parsec_blackscholes.c                  # run in its own folder, traced and analyzed at the end
 nocrun status                                       # check on it
-cat ~/noc_runs/<run>/analysis/w10000/summary.txt    # results
+cat ~/noc_runs/baremetal/parsec/<run>/analysis/w10000/summary.txt    # results
 nocrun analyze <run> -w 80000                       # another window size
 ```
 

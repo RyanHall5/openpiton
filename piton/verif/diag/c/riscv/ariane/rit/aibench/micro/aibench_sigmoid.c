@@ -23,7 +23,7 @@
 //
 // Options (nocrun start ... -D NAME=VALUE): BATCH, IMG_H, IMG_W, NTHREADS.
 // After the ROI hart 0 checks every element and prints a checksum to compare
-// with the original built on x86 (rit/benchmarks/aibench/).
+// with the original built on x86 (rit/benchmarks/aibench/micro/).
 
 #include <stdint.h>
 #include <stdio.h>
@@ -33,7 +33,7 @@
 #include "rit/mathf.h"
 
 // Checksum of the ORIGINAL AIBench kernel's output for the default size and
-// this input (rit/benchmarks/aibench/check_ports.sh). Applies only when
+// this input (rit/benchmarks/aibench/micro/check_ports.sh). Applies only when
 // BATCH, IMG_H and IMG_W are left at their defaults.
 #define AIB_REF_CHECKSUM 0x05ca1efda49b963cull
 #if !defined(BATCH) && !defined(IMG_H) && !defined(IMG_W)
@@ -74,7 +74,7 @@ int main(int argc, char **argv)
 
     if (hart == 0) {
         setup_ok = nThreads >= 1 && nThreads <= nharts;
-        printf("AIBench sigmoid (bare-metal port): NHWC %d x %d x %d x %d = %ld elements, %d threads of %d harts\n",
+        printf("AIBench Micro Sigmoid (DC-AI-M4), bare-metal port: NHWC %d x %d x %d x %d = %ld elements, %d threads of %d harts\n",
                BATCH, IMG_H, IMG_W, CHANNELS, NELEM, nThreads, nharts);
         if (setup_ok)
             aib_fill_pixels(data, NELEM);

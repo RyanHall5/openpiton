@@ -15,7 +15,7 @@
 //           licence below). glibc's tanhf is a different implementation:
 //           1 input in 250 differs, by at most 3 ulp. Every integer input
 //           -255..255 (the pixel values the AIBench ports use) gives exactly
-//           glibc's result. Test: rit/benchmarks/aibench/test_mathf.c.
+//           glibc's result. Test: rit/benchmarks/aibench/micro/test_mathf.c.
 //
 // Changes from musl: the table is renamed rit_exp2f_data; musl's internal
 // helpers are written out; fp-contract is turned off so GCC doesn't fuse
