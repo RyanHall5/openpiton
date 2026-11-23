@@ -153,6 +153,19 @@ def git_info():
             "uncommitted_changes": len(dirty.splitlines()) if dirty else 0}
 
 
+def pid_alive(pid):
+    """True if the process exists and isn't a zombie (killed, waiting to be reaped)."""
+    try:
+        os.kill(int(pid), 0)
+    except (ValueError, OSError):
+        return False
+    try:
+        with open("/proc/%d/stat" % int(pid)) as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return True
+
+
 def machine_load():
     """Other simulations on this machine (any user) and the load average, to judge
     whether a run's wall time was slowed by sharing the CPU."""
@@ -705,7 +718,7 @@ def cmd_restore(a):
 
 def cmd_finish(a):
     for d in a.runs:
-        finish_one(os.path.abspath(d), a)
+        finish_one(os.path.abspath(resolve_run(d, a)), a)
 
 
 def finish_one(d, a):
@@ -951,18 +964,13 @@ def cmd_status(a):
         pidf = os.path.join(d, "job.pid")
         if not os.path.exists(pidf):
             continue
-        try:
-            pid = int(open(pidf).read().strip())
-            os.kill(pid, 0)
-            alive = True
-        except (ValueError, OSError):
-            alive = False
+        alive = pid_alive(open(pidf).read().strip())
         i = load_run(d)
         if not alive and i.get("status") not in (None, "running"):
             os.remove(pidf)          # finished, but its job was interrupted before cleaning up
             continue
         lc = last_trace_cycle(d)
-        running.append({"run": i["run"], "where": os.path.relpath(os.path.dirname(d), root), "state": "running" if alive else "STOPPED (job died; nocrun finish it)",
+        running.append({"run": i["run"], "where": os.path.relpath(os.path.dirname(d), root), "state": "running" if alive else "STOPPED (job died): nocrun finish %s" % i["run"],
                         "started": i.get("started"), "trace up to cycle": lc if lc is not None else "",
                         "sims.log MB": mb(os.path.join(d, "sims.log")) or ""})
     batches = batches_in_progress(top_root(a))
@@ -1006,8 +1014,90 @@ def read_batch_list(path):
     return runs
 
 
+def find_batch(name, a):
+    bds = sorted(glob.glob(os.path.join(top_root(a), "batches", "*")))
+    hits = [b for b in bds if os.path.basename(b) == name or name in os.path.basename(b)]
+    if os.path.isdir(name):
+        hits = [os.path.abspath(name)]
+    if len(hits) != 1:
+        die("no single batch matches %r%s" % (name, (" (matches: %s)" % ", ".join(map(os.path.basename, hits))) if hits else ""))
+    return hits[0]
+
+
+def batch_resume(a):
+    """Restart a batch whose worker died (machine reboot, killed): runs that finished
+    PASS are skipped, runs that were cut off are recorded as STOPPED and started again."""
+    bdir = find_batch(a.list, a)
+    pidf = os.path.join(bdir, "batch.pid")
+    if os.path.exists(pidf):
+        if pid_alive(open(pidf).read().strip()):
+            die("batch %s is still running" % os.path.basename(bdir))
+        os.remove(pidf)
+    cfg = json.load(open(os.path.join(bdir, "batch.json")))
+    runs = read_batch_list(os.path.join(bdir, "list.txt"))
+    logtxt = open(os.path.join(bdir, "batch.log")).read() if os.path.exists(os.path.join(bdir, "batch.log")) else ""
+    passed = set(int(k) for k in re.findall(r" finish +(?:run +)?(\d+)\D.*\bPASS\b", logtxt))
+    todo = [k for k in range(1, len(runs) + 1) if k not in passed]
+    # a run cut off mid-way: record it (its job died with the worker)
+    for k in todo:
+        outp = os.path.join(bdir, "run%02d.out" % k)
+        if not os.path.exists(outp):
+            continue
+        m = re.search(r"run folder: (\S+)", open(outp, errors="replace").read())
+        if m and os.path.isdir(m.group(1)) and os.path.exists(os.path.join(m.group(1), "job.pid")):
+            try:
+                i = load_run(m.group(1))
+                if i.get("status") == "running":
+                    finish_one(m.group(1), argparse.Namespace(keep_logs=False, no_analysis=True))
+                    i = load_run(m.group(1))
+                    if i.get("status") not in ("PASS", "FAIL"):
+                        i["status"] = "STOPPED"
+                        i["note"] = ((i.get("note") or "") + " cut off; batch resumed %s" % now()).strip()
+                        save_run(m.group(1), i)
+                        append_runs_csv(index_root(m.group(1), i), i, summary_json(m.group(1)))
+                    print("recorded the cut-off run %s as %s" % (os.path.basename(m.group(1)), i["status"]))
+            except SystemExit:
+                pass
+        os.rename(outp, outp + ".before_resume")
+    if not todo:
+        print("every run in %s already passed; nothing to resume" % os.path.basename(bdir))
+        return
+    if a.jobs_given:
+        cfg["jobs"] = a.jobs
+    cfg["resumed"] = cfg.get("resumed", []) + [now()]
+    with open(os.path.join(bdir, "batch.json"), "w") as f:
+        json.dump(cfg, f, indent=1)
+    with open(os.path.join(bdir, "todo.txt"), "w") as f:
+        f.write(" ".join(map(str, todo)) + "\n")
+    print("resuming %s: %d of %d runs left, %d at a time:" % (os.path.basename(bdir), len(todo), len(runs), cfg["jobs"]))
+    for k in todo:
+        print("  %2d  nocrun start %s" % (k, " ".join(shlex.quote(x) for x in runs[k - 1]["args"])))
+    start_worker(bdir, a)
+
+
+def start_worker(bdir, a):
+    cmd = [sys.executable, os.path.abspath(__file__), "--runs-dir", top_root(a), "_batch-worker", bdir]
+    if a.fg:
+        subprocess.call(cmd)
+        return
+    with open(os.path.join(bdir, "worker.out"), "a") as out:
+        subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                         start_new_session=True, close_fds=True)
+    print("started in the background (safe to log out). Progress:")
+    print("  nocrun status            (the batch, and each run as it starts)")
+    print("  cat %s/batch.log" % bdir)
+    print("Stop the whole batch (its running simulations too):")
+    print("  kill -- -$(cat %s/batch.pid)" % bdir)
+    print("If it's cut off (machine reboot, ...), pick it up again with:")
+    print("  nocrun batch --resume %s" % os.path.basename(bdir))
+
+
 def cmd_batch(a):
     """Start a queue of runs, at most -j at a time, in the background."""
+    if a.resume:
+        return batch_resume(a)
+    if a.jobs is None:
+        a.jobs = 1
     runs = read_batch_list(a.list)
     if not runs:
         die("no runs in %s" % a.list)
@@ -1025,22 +1115,11 @@ def cmd_batch(a):
     with open(os.path.join(bdir, "batch.json"), "w") as f:
         json.dump({"name": name, "jobs": a.jobs, "runs": len(runs), "started": now(),
                    "list": os.path.abspath(a.list)}, f, indent=1)
-    cmd = [sys.executable, os.path.abspath(__file__), "--runs-dir", root, "_batch-worker", bdir]
     print("batch folder: %s" % bdir)
     print("%d runs, %d at a time:" % (len(runs), a.jobs))
     for r in runs:
         print("  nocrun start " + " ".join(shlex.quote(x) for x in r["args"]))
-    if a.fg:
-        subprocess.call(cmd)
-        return
-    with open(os.path.join(bdir, "worker.out"), "w") as out:
-        subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                         start_new_session=True, close_fds=True)
-    print("started in the background (safe to log out). Progress:")
-    print("  nocrun status            (the batch, and each run as it starts)")
-    print("  cat %s/batch.log" % bdir)
-    print("Stop the whole batch (its running simulations too):")
-    print("  kill -- -$(cat %s/batch.pid)" % bdir)
+    start_worker(bdir, a)
 
 
 def cmd_batch_worker(a):
@@ -1052,9 +1131,17 @@ def cmd_batch_worker(a):
     with open(os.path.join(bdir, "batch.pid"), "w") as f:
         f.write(str(os.getpid()))
     log = open(os.path.join(bdir, "batch.log"), "a", buffering=1)
-    log.write("%s batch %s: %d runs, %d at a time\n" % (now(), cfg["name"], len(runs), cfg["jobs"]))
+    queue = list(enumerate(runs, 1))
+    todof = os.path.join(bdir, "todo.txt")
+    if os.path.exists(todof):
+        keep = set(int(x) for x in open(todof).read().split())
+        queue = [(k, r) for k, r in queue if k in keep]
+        os.remove(todof)
+        log.write("%s resumed: runs %s, %d at a time\n" % (now(), " ".join(str(k) for k, _ in queue), cfg["jobs"]))
+    else:
+        log.write("%s batch %s: %d runs, %d at a time\n" % (now(), cfg["name"], len(runs), cfg["jobs"]))
     env = dict(os.environ, NOCRUN_BATCH=os.path.basename(bdir))
-    queue, active, done = list(enumerate(runs, 1)), [], 0
+    active, done, total = [], len(runs) - len(queue), len(runs)
     while queue or active:
         while queue and len(active) < cfg["jobs"]:
             k, r = queue.pop(0)
@@ -1063,8 +1150,8 @@ def cmd_batch_worker(a):
                    "start"] + r["args"] + ["--fg"]
             p = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env)
             active.append((k, r, p, out))
-            log.write("%s start  %2d/%d  nocrun start %s\n" % (now(), k, len(runs),
-                                                               " ".join(shlex.quote(x) for x in r["args"])))
+            log.write("%s start  run %2d of %d: nocrun start %s\n" % (now(), k, total,
+                                                                    " ".join(shlex.quote(x) for x in r["args"])))
             time.sleep(2)            # so runs of the same program get distinct folders
         time.sleep(10)
         still = []
@@ -1078,8 +1165,8 @@ def cmd_batch_worker(a):
             m = re.search(r"run folder: (\S+)", txt)
             run = os.path.basename(m.group(1)) if m else None
             st = re.search(r"^%s: (.*)$" % re.escape(run), txt, re.M) if run else None
-            log.write("%s finish %2d/%d  %s  %s\n" % (now(), k, len(runs), run or "(no run folder)",
-                                                       st.group(1) if st else "exit %s" % p.returncode))
+            log.write("%s finish run %2d (%d/%d done): %s  %s\n" % (now(), k, done, total, run or "(no run folder)",
+                                                                  st.group(1) if st else "exit %s" % p.returncode))
         active = still
     log.write("%s batch done\n" % now())
     os.remove(os.path.join(bdir, "batch.pid"))
@@ -1089,18 +1176,18 @@ def batches_in_progress(root):
     out = []
     for pidf in sorted(glob.glob(os.path.join(root, "batches", "*", "batch.pid"))):
         bdir = os.path.dirname(pidf)
-        try:
-            os.kill(int(open(pidf).read().strip()), 0)
-            alive = True
-        except (ValueError, OSError):
-            alive = False
+        alive = pid_alive(open(pidf).read().strip())
         cfg = json.load(open(os.path.join(bdir, "batch.json")))
         logtxt = open(os.path.join(bdir, "batch.log")).read() if os.path.exists(os.path.join(bdir, "batch.log")) else ""
-        started, finished = logtxt.count(" start  "), logtxt.count(" finish ")
+        # after a resume only the last session's lines count, plus the runs that passed before
+        last = logtxt.rsplit(" resumed: ", 1)
+        session = last[-1]
+        started, finished = session.count(" start  "), session.count(" finish ")
+        before = len(set(re.findall(r" finish +(?:run +)?(\d+)\D.*\bPASS\b", last[0]))) if len(last) > 1 else 0
         out.append({"batch": os.path.basename(bdir),
-                    "state": "running" if alive else "STOPPED (worker died)",
-                    "done": "%d/%d" % (finished, cfg["runs"]), "running": started - finished,
-                    "queued": cfg["runs"] - started, "at a time": cfg["jobs"]})
+                    "state": "running" if alive else "STOPPED: nocrun batch --resume %s" % os.path.basename(bdir),
+                    "done": "%d/%d" % (before + finished, cfg["runs"]), "running": started - finished,
+                    "queued": str(cfg["runs"] - before - started), "at a time": cfg["jobs"]})
     return out
 
 
@@ -1289,8 +1376,11 @@ def main(argv=None):
     s.add_argument("-w", "--window", type=int, default=10000)
 
     s = sub.add_parser("batch", help="start a queue of runs from a list file, N at a time")
-    s.add_argument("list", help="text file: one run per line, written as the arguments to `nocrun start`")
-    s.add_argument("-j", "--jobs", type=int, default=1, help="runs at the same time (default 1: one after another)")
+    s.add_argument("list", help="text file: one run per line, written as the arguments to `nocrun start`"
+                               " (with --resume: the batch folder or part of its name)")
+    s.add_argument("-j", "--jobs", type=int, help="runs at the same time (default 1: one after another)")
+    s.add_argument("--resume", action="store_true",
+                   help="restart a batch that was cut off (reboot, killed): skips runs that passed")
     s.add_argument("--name", help="batch name (default: the list file's name)")
     s.add_argument("--fg", action="store_true", help="run the queue in this terminal")
     s = sub.add_parser("reorganize", help="move runs from the old flat layout into <env>/<suite>/ (asks first)")
@@ -1316,6 +1406,8 @@ def main(argv=None):
         k = argv.index("--")
         argv, extra = argv[:k], argv[k + 1:]
     a = ap.parse_args(argv)
+    if getattr(a, "cmd", None) == "batch":
+        a.jobs_given = a.jobs is not None
     a.noctrace_args = extra
     if not a.cmd:
         ap.print_help()

@@ -180,6 +180,11 @@ cat ~/noc_runs/batches/<batch>/batch.log             # when each run started and
 - `-j 1` (the default) runs them one after another: isolated wall times, total time = the sum. `-j 2`–`-j 4` finishes much sooner with each run slightly slower (see above).
 - The batch survives logging out, like a single run. Its folder, `~/noc_runs/batches/<date>_<time>_<list name>/`, has the list, `batch.log` and each run's console output. Each run's `run_info.txt` names its batch.
 - **Stop a whole batch** (the queue and its running simulations): `kill -- -$(cat ~/noc_runs/batches/<batch>/batch.pid)`. Runs that were stopped show as `STOPPED` in `nocrun status`; `nocrun finish <run>` records what they got to.
+- **Resume a batch that was cut off** (machine reboot, killed): `nocrun batch --resume <batch>` (any part of the batch folder's name). Runs that already passed are skipped; a run that was cut off is recorded as `STOPPED` and started again as a new round (`_r2`); the rest of the queue continues. Add `-j N` to change how many run at once. `nocrun status` shows a cut-off batch as `STOPPED: nocrun batch --resume <batch>`.
+
+### The lab machines reboot some nights
+
+The workstation rebooted at **01:03 on 2026-11-19** and **01:00 on 2026-11-23** (`last -x reboot`), apparently scheduled maintenance, not every night. A reboot kills every run and batch. Nothing to do but restart what was cut off (`nocrun batch --resume`, or `nocrun finish <run>` and start it again), and for long runs, check `uptime` / `last -x reboot | head` now and then to learn the pattern. Runs that last days (a Linux boot) need checkpoints along the way so they can continue after a reboot instead of starting over ([linux_sim.md](linux_sim.md)).
 
 ## Which VCS
 

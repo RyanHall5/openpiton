@@ -171,6 +171,8 @@ nocrun batch <list_file> [-j <at_a_time>] [--name <name>]
 nocrun batch rit/benchmarks/aibench/micro/all.txt -j 2
 # stop a whole batch, including its running simulations
 kill -- -$(cat ~/noc_runs/batches/<batch_folder>/batch.pid)
+# pick up a batch that was cut off (reboot): skips runs that passed, reruns the cut-off one
+nocrun batch --resume <batch_folder or part of its name>
 ```
 
 Results don't depend on how many run at once; wall time does a little ([runs.md](runs.md#what-running-together-does-and-doesnt-change)).

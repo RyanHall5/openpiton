@@ -69,3 +69,7 @@ OpenSBI and BBL both expect this. So a boot payload (OpenSBI `fw_payload` or BBL
 4. Init script: print `RIT_READY`, wait for a command; UART-triggered checkpoint.
 5. ROI trigger via the UART scratch register; benchmark runs from the checkpoint.
 6. (In parallel, optional) Verilator build of the 2x1 and a speed comparison.
+
+## Surviving reboots
+
+The lab workstations reboot some nights around 01:00 (seen 2026-11-19 and 2026-11-23; see [runs.md](runs.md#the-lab-machines-reboot-some-nights)). A Linux boot in simulation takes days, so it will likely be cut off at least once. Plan: save a checkpoint every N cycles during the boot (e.g. every few hours of wall time), keeping the latest two, and resume from the newest after a reboot with `nocrun restore`. That needs repeated saves in `rit_ckpt` (today it saves once, at `+rit_save_at`), which is a small change to make before starting the boot run.
