@@ -43,6 +43,7 @@
 // this input (rit/benchmarks/aibench/micro/check_ports.sh). Applies only when
 // BATCH, IMG_H and IMG_W are left at their defaults.
 #define AIB_REF_CHECKSUM 0xeaa376b4109ed366ull
+#define AIB_REF_CHECKSUM_ARIANE AIB_REF_CHECKSUM   // Ariane gives the original's output
 #if !defined(BATCH) && !defined(IMG_H) && !defined(IMG_W)
 #define AIB_REF_SIZE 1
 #else
@@ -207,6 +208,6 @@ int main(int argc, char **argv)
                     }
                 }
     aib_print_stats(nharts);
-    errors = aib_finish(aib_checksum(&output[0][0][0][0], (long)BATCH * IN_C * OUT_H * OUT_W), errors, AIB_REF_SIZE, AIB_REF_CHECKSUM);
+    errors = aib_finish(aib_checksum(&output[0][0][0][0], (long)BATCH * IN_C * OUT_H * OUT_W), errors, AIB_REF_SIZE, AIB_REF_CHECKSUM, AIB_REF_CHECKSUM_ARIANE);
     return errors ? 2 : 0;
 }

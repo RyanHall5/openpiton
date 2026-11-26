@@ -36,7 +36,8 @@ echo "instruction" >> trace_hart_0.log
 [ -n "\${TF:-}" ] && cp "$SRC" "\$TF"
 case "\$*" in *+rit_save_at=*) echo "checkpoint bytes" > checkpoint.vcs;; esac
 printf "PARSEC blackscholes (bare-metal port)\nhart 0: ROI cycles 2030996, instructions 910601\nhart 1: ROI cycles 2090539, instructions 910744\n" > fake_uart.log
-case "\$*" in *aibench_relu*) printf "Checksum: 0x9bb2151206d00020\nChecksum matches the original AIBench output\n" >> fake_uart.log;; esac
+case "\$*" in *aibench_relu*) printf "Checksum: 0x9bb2151206d00020\nChecksum matches the original AIBench output\n" >> fake_uart.log;;
+               *aibench_tanh*) printf "Checksum: 0xd9b11be50c7492d4\nChecksum matches the OpenPiton+Ariane result (= the original's output except ...)\n" >> fake_uart.log;; esac
 printf "Num Errors: 0\n" >> fake_uart.log
 sleep \${FAKE_SLEEP:-0}
 if [ -n "\${FAKE_KILL:-}" ]; then echo "Received SIGHUP (signal 1), exiting." >> sims.log; exit 0; fi
@@ -118,16 +119,17 @@ FAKE_SLEEP=8 $N batch "$T/rb.txt" -j 1 > /dev/null
 RBD=$(ls -d "$NOC_RUNS"/batches/*_rb)
 for i in $(seq 1 60); do grep -q "finish run  1" "$RBD/batch.log" 2>/dev/null && break; sleep 1; done
 sleep 4; kill -9 -- -$(cat "$RBD/batch.pid"); sleep 1
-check "status shows a cut-off batch and how to resume it" "$N status | grep -q 'STOPPED: nocrun batch --resume'"
+check "status shows a cut-off batch and how to resume it" "$N status | grep -c 'STOPPED: nocrun batch --resume' > /dev/null"
 $N batch --resume rb > "$T/resume.txt"
 for i in $(seq 1 90); do grep -q "batch done" "$RBD/batch.log" 2>/dev/null && break; sleep 1; done
 check "resume: reruns only the unfinished runs, records the cut-off one as STOPPED" "grep -q 'resumed: runs 2 3' '$RBD/batch.log' && [ \$(grep -c 'tanh_2x1' '$RBD/batch.log') -eq 1 ] && grep -q 'STOPPED' \$(ls -d '$A'/*_sigmoid_2x1_r1)/run_info.txt && grep -q 'PASS' \$(ls -d '$A'/*_sigmoid_2x1_r2)/run_info.txt && grep -q 'batch done' '$RBD/batch.log'"
+check "a run matching the Ariane hardware reference is recorded as such" "grep -q 'checksum: *0xd9b11be50c7492d4 (matches Ariane hw)' \$(ls -d '$A'/*_tanh_2x1_r1)/run_info.txt"
 check "finish takes a run name, like the other commands" "cd '$A' && $N finish sigmoid_2x1_r1 > /dev/null"
 
 # scratch: own folder and index, kept out of the main list
 $N start aibench_relu.c --scratch -D IMG_H=16 --fg > /dev/null
-check "--scratch: run under scratch/baremetal/aibench_micro with its own index" "ls -d '$NOC_RUNS'/scratch/baremetal/aibench_micro/*_relu_2x1_r1 > /dev/null && grep -q 'relu_2x1_r1' '$NOC_RUNS/scratch/runs.csv' && [ \$($N list | grep -c relu_2x1) -eq 1 ] && $N list --scratch | grep -q relu_2x1_r1"
-check "list --suite filters" "$N list --suite parsec | grep -q blackscholes && ! $N list --suite parsec | grep -q convolution"
+check "--scratch: run under scratch/baremetal/aibench_micro with its own index" "ls -d '$NOC_RUNS'/scratch/baremetal/aibench_micro/*_relu_2x1_r1 > /dev/null && grep -q 'relu_2x1_r1' '$NOC_RUNS/scratch/runs.csv' && [ \$($N list | grep -c relu_2x1) -eq 1 ] && $N list --scratch | grep -c relu_2x1_r1 > /dev/null"
+check "list --suite filters" "$N list --suite parsec | grep -c blackscholes > /dev/null && ! $N list --suite parsec | grep -c convolution > /dev/null"
 check "analyze finds a run anywhere in the layout by part of its name" "$N analyze relu_2x1_r1 -w 700 > /dev/null && [ -d \$(ls -d '$A'/*_relu_2x1_r1)/analysis/w700 ]"
 
 # reorganize: folders in the old flat layout, with the old program names

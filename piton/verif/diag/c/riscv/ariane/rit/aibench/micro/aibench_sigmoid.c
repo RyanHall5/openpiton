@@ -36,6 +36,9 @@
 // this input (rit/benchmarks/aibench/micro/check_ports.sh). Applies only when
 // BATCH, IMG_H and IMG_W are left at their defaults.
 #define AIB_REF_CHECKSUM 0x05ca1efda49b963cull
+// The same output computed on OpenPiton's Ariane (VCS 2x1, 2026-11-22): differs
+// from the original where Ariane's FPU divider rounds a quotient 1 ulp low.
+#define AIB_REF_CHECKSUM_ARIANE 0xd9b11be50c7492d4ull
 #if !defined(BATCH) && !defined(IMG_H) && !defined(IMG_W)
 #define AIB_REF_SIZE 1
 #else
@@ -112,6 +115,6 @@ int main(int argc, char **argv)
         }
     }
     aib_print_stats(nharts);
-    errors = aib_finish(aib_checksum(data, NELEM), errors, AIB_REF_SIZE, AIB_REF_CHECKSUM);
+    errors = aib_finish(aib_checksum(data, NELEM), errors, AIB_REF_SIZE, AIB_REF_CHECKSUM, AIB_REF_CHECKSUM_ARIANE);
     return errors ? 2 : 0;
 }

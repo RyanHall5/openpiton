@@ -462,6 +462,8 @@ def parse_uart(path, info=None):
                     info["checksum"] = m.group(1)
                 if "matches the original" in line:
                     info["reference"] = "matches original"
+                elif "matches the OpenPiton+Ariane result" in line:
+                    info["reference"] = "matches Ariane hw"
                 elif "DIFFERS from the original" in line:
                     info["reference"] = "DIFFERS"
                 elif line.startswith("No reference checksum"):

@@ -23,8 +23,8 @@
 //   aib_checksum()       hash of an output array, to compare with the original
 //                        built on x86 (rit/benchmarks/aibench/micro/check_ports.sh).
 //   aib_finish()         prints the checksum, whether it matches the original's
-//                        (each port has the original's checksum for its default
-//                        size), and "Num Errors".
+//                        or the OpenPiton+Ariane hardware's (each port has both
+//                        for its default size), and "Num Errors".
 
 #ifndef RIT_AIBENCH_H
 #define RIT_AIBENCH_H
@@ -114,17 +114,31 @@ static uint64_t aib_checksum(const float *p, long n)
     return h;
 }
 
-// Prints the checksum, compares it with the original AIBench kernel's checksum
-// for the same input when the port has one (default size), and prints the
-// "Num Errors" line. Returns the error count, plus one if the checksum differs.
-static int aib_finish(uint64_t checksum, int errors, int have_ref, uint64_t ref)
+// Prints the checksum and compares it with two references for the same input
+// (each port has them for its default size):
+//   ref_orig    the ORIGINAL AIBench kernel's output, built on x86
+//               (rit/benchmarks/aibench/micro/check_ports.sh); QEMU gives this too.
+//   ref_ariane  the output on OpenPiton's Ariane (VCS model, Genesys2). Ariane's
+//               FPU divider sometimes rounds a quotient 1 ulp low (see
+//               rit/benchmarks/README.md and rit/tests/rit_fdiv_check.c), so
+//               kernels that divide (sigmoid, avg_pooling) get a slightly
+//               different output there; for every other kernel it equals ref_orig.
+// Matching either is correct; matching neither adds an error. Then prints
+// "Num Errors". Returns the error count.
+static int aib_finish(uint64_t checksum, int errors, int have_ref, uint64_t ref_orig, uint64_t ref_ariane)
 {
     printf("Checksum: 0x%016lx\n", (unsigned long)checksum);
     if (have_ref) {
-        if (checksum == ref)
+        if (checksum == ref_orig)
             printf("Checksum matches the original AIBench output\n");
+        else if (checksum == ref_ariane)
+            printf("Checksum matches the OpenPiton+Ariane result (= the original's output except where "
+                   "Ariane's FPU divider rounds a quotient 1 ulp low)\n");
         else {
-            printf("Checksum DIFFERS from the original AIBench output (0x%016lx)\n", (unsigned long)ref);
+            printf("Checksum DIFFERS from the original AIBench output (0x%016lx)", (unsigned long)ref_orig);
+            if (ref_ariane != ref_orig)
+                printf(" and from the OpenPiton+Ariane result (0x%016lx)", (unsigned long)ref_ariane);
+            printf("\n");
             errors++;
         }
     } else {

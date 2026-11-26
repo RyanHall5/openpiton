@@ -97,14 +97,25 @@ nocrun status
 
 See [runs.md: Running several at once](../docs/runs.md#running-several-at-once) for how many to run together, and what that does to wall time.
 
-**Measured on the lab machine (2x1, VCS):**
+**Measured on the lab machine (2x1, VCS V-2023.12, default sizes, 2026-11-22/23):**
 
-| | ROI cycles per hart | whole run | wall time |
-|---|---|---|---|
-| blackscholes simsmall, 1 run | 2.03–2.09 M | 3.3 M cycles | 20 min |
-| convolution 227x227 | 13.4 M (7.8 M instructions) | 46.3 M cycles | 4.0 h |
+| | ROI cycles (slowest hart) | whole run, cycles | wall time | packets in ROI |
+|---|---|---|---|---|
+| blackscholes simsmall, 1 run | 2.09 M | 3.3 M | 20 min | 81,659 |
+| relu | 2.27 M | 21.6 M | 1.9 h | 132,468 |
+| fully_connected | 14.80 M | 24.3 M | 1.8 h | 1,627,261 |
+| tanh | 4.94 M | 26.5 M | 2.5 h | 194,776 |
+| sigmoid | 8.56 M | 30.0 M | 2.7 h | 196,572 |
+| element_multiply | 4.99 M | 35.3 M | 2.9 h | 463,582 |
+| element_add | 4.99 M | 35.3 M | 3.0 h | 463,568 |
+| softmax | 8.97 M | 34.6 M | 3.2 h | 389,841 |
+| dropout | 33.29 M | 33.9 M | 3.9 h | 254,665 |
+| convolution | 13.40 M | 46.3 M | 4.2 h | 301,257 |
+| avg_pooling | 12.55 M | 52.3 M | 4.7 h | 400,546 |
+| batch_norm | 11.28 M | 60.7 M | 5.2 h | 836,078 |
+| max_pooling | 13.87 M | 60.5 M | 5.4 h | 400,337 |
 
-The simulator runs about 3,000–4,500 cycles/s, slower while the NoC is busy. The other AIBench ports should take 1–4 hours each (estimates in `aibench/micro/all.txt`); update this table as they finish.
+All twelve AIBench runs together: 41 hours one after another. The simulator ran 2,800–3,600 cycles/s on these. Most of each run is outside the ROI: hart 0 building the input and checking the output, one hart at a time. Running three at once didn't slow them measurably: element_multiply (with two others) and element_add (alone) do identical work and took 10,561 s and 10,653 s.
 
 ### 4. Check the results
 
@@ -116,11 +127,13 @@ Checksum matches the original AIBench output
 Num Errors: 0
 ```
 
-- **`Num Errors: 0`:** hart 0 recomputed the output after the ROI (every element, or for matmul 16 rows) and found no differences.
-- **`Checksum matches the original AIBench output`:** the checksum of the whole output equals the checksum of the *original* AIBench kernel's output for the same input (built on x86 by `aibench/check_ports.sh`). Each port has that value built in for its default size. With other sizes it prints `No reference checksum for this size` and only the recomputation applies.
+- **`Num Errors: 0`:** hart 0 recomputed the output after the ROI (every element, or for fully_connected 16 rows) and found no differences.
+- **`Checksum matches the original AIBench output`:** the checksum of the whole output equals the checksum of the *original* AIBench kernel's output for the same input (built on x86 by `aibench/micro/check_ports.sh`). QEMU gives this for every kernel.
+- **`Checksum matches the OpenPiton+Ariane result`:** the output equals what this hardware computes, which for **sigmoid and avg_pooling** differs from the original in a few elements because Ariane's divider sometimes rounds 1 ulp low ([below](#arianes-divider-isnt-correctly-rounded)). That's the expected result for those two on the VCS model (and on the Genesys2, if it runs the same Ariane).
+- Each port has both values built in for its default size. With other sizes it prints `No reference checksum for this size` and only the recomputation applies.
 - **dropout** has a reference only for one thread: with two, which elements are kept depends on timing (see below), so its checksum varies between runs.
 
-`nocrun list` shows a `reference` column (`matches original` / `DIFFERS` / `none for this size`) for every run.
+`nocrun list` shows a `reference` column (`matches original` / `matches Ariane hw` / `DIFFERS` / `none for this size`) for every run.
 
 ### 5. Analyze
 
@@ -201,6 +214,26 @@ Two compiler details keep the arithmetic identical to the original: multiply and
 **Different:** no file reading (hart 0 builds the arrays from the table before the ROI), no thread creation or join (every hart calls `bs_thread()`; barriers before and after), and PARSEC's `ERR_CHK` comparison against the DerivaGem reference values runs after the ROI instead of inside the loop. `exp`/`log` come from `rit/math.h`: musl's copy of Arm's optimized-routines code, the same algorithm and tables glibc uses on Linux, compiled into the program because a libm built without `-mcmodel=medany` can't link at Ariane's 0x80000000 load address.
 
 **Checked:** in QEMU on 1, 2 and 4 harts; all 4096 simsmall prices are within 1.4e-5 of PARSEC's own output built with GCC on x86 (float rounding differences), and `Num Errors: 0` against the reference values, same as PARSEC.
+
+## Ariane's divider isn't correctly rounded
+
+On the 2026-11-22 runs, sigmoid and avg_pooling passed their own checks but their checksums differed from the original's, while QEMU matched it exactly. Both divide. `rit/tests/rit_fdiv_check.c` checks the hardware's `fdiv.s`/`fdiv.d` against a correctly rounded reference computed with integer arithmetic only (no FPU). On the VCS model (2026-11-23):
+
+| Divisions | wrong |
+|---|---|
+| `float(s) / 9`, s = 1..2295 (every avg_pooling division) | 56 (2.4%) |
+| `1 / (1 + expf(-v))`, v = 0..255 (every sigmoid division) | 1 |
+| 4,000 random floats | 360 (9%) |
+| 2,000 random doubles | 93 (4.7%) |
+| `expf(-v)` against glibc | 0 differ |
+
+Every wrong quotient shown was **1 ulp too low** (e.g. 33/9: correct `0x406aaaab`, hardware `0x406aaaaa`): the divider sometimes doesn't round up when round-to-nearest requires it. It happens with the default (dynamic) rounding mode and with round-to-nearest-even written into the instruction, so it's the divider (Ariane's FPU, `fpnew` with the `div_sqrt_mvp` unit in OpenPiton's 2020 Ariane), not a setting. CVA6, Ariane's current name, has bug reports of this kind.
+
+What it means:
+- **Traffic:** none. A quotient off by one bit is stored to the same address at the same time.
+- **Results:** kernels that divide get outputs that differ from x86 in the last bit of a few elements. Their own checks pass because they divide on the same hardware. The ports therefore accept two references: the original's output, and this hardware's.
+- **FPGA:** the Genesys2 runs the same RTL, so with the same Ariane it should produce exactly the VCS checksums. Correct checksums on the board would mean its Ariane is a different version.
+- **blackscholes** divides in double precision too; its check allows PARSEC's tolerance, so it isn't affected.
 
 ## How the ports were checked
 
